@@ -27,7 +27,7 @@ export default function LoginPage() {
         return
       }
 
-      setMessage("Logged in successfully!")
+      window.location.href = "/dashboard"
       // Later: redirect to dashboard, fetch household, etc.
       console.log("Session:", data)
     } catch (err: any) {

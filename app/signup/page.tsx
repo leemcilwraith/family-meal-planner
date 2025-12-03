@@ -12,31 +12,64 @@ export default function SignupPage() {
   const [error, setError] = useState<string | null>(null)
 
   const handleSignup = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoading(true)
-    setMessage(null)
-    setError(null)
+  e.preventDefault()
+  setLoading(true)
+  setMessage(null)
+  setError(null)
 
-    try {
-      // 1) Sign up user in Supabase Auth
-      const { error: signUpError } = await supabase.auth.signUp({
-        email,
-        password,
-      })
+  try {
+    // 1) Create user in Supabase Auth
+    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+      email,
+      password,
+    })
 
-      if (signUpError) {
-        setError(signUpError.message)
-        return
-      }
-
-      // Later: 2) Create household row in DB and link user
-      setMessage("Signup successful. Check your email (if confirmation is required), then log in.")
-    } catch (err: any) {
-      setError(err.message || "Something went wrong")
-    } finally {
-      setLoading(false)
+    if (signUpError) {
+      setError(signUpError.message)
+      return
     }
+
+    const user = signUpData.user
+
+    // If email confirmation is ON, user won't have a session yet
+    if (!user) {
+      setMessage("Account created! Please check your email to verify your account before logging in.")
+      return
+    }
+
+    // 2) Create household
+    const { data: householdData, error: householdError } = await supabase
+      .from("households")
+      .insert([{ name: householdName }])
+      .select()
+      .single()
+
+    if (householdError) {
+      setError(householdError.message)
+      return
+    }
+
+    // 3) Link user to household
+    const { error: linkError } = await supabase.from("user_households").insert([
+      {
+        user_id: user.id,
+        household_id: householdData.id,
+        role: "owner",
+      },
+    ])
+
+    if (linkError) {
+      setError(linkError.message)
+      return
+    }
+
+    setMessage("Signup complete! You can now log in.")
+  } catch (err: any) {
+    setError(err.message)
+  } finally {
+    setLoading(false)
   }
+}
 
   return (
     <main style={{ padding: "2rem", fontFamily: "system-ui, sans-serif" }}>
