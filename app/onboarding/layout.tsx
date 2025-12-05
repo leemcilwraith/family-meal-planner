@@ -1,12 +1,3 @@
-import type { Metadata } from "next"
-import "./globals.css"
-import React from "react"
-
-export const metadata: Metadata = {
-  title: "Family Meal Planner",
-  description: "Smart weekly meal planning for families with young children.",
-}
-
 export default function OnboardingLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">

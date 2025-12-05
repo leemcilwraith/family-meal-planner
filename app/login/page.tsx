@@ -33,7 +33,47 @@ export default function LoginPage() {
       return
     }
 
-    router.push("/dashboard")
+    // After successful login:
+const { data: link } = await supabase
+  .from("user_households")
+  .select("household_id")
+  .eq("user_id", user.id)
+  .maybeSingle()
+
+if (!link) {
+  router.push("/onboarding/step-1")
+} else {
+  // After successful login:
+const { data: link } = await supabase
+  .from("user_households")
+  .select("household_id")
+  .eq("user_id", user.id)
+  .maybeSingle()
+
+// No household yet? Start onboarding.
+if (!link?.household_id) {
+  router.push("/onboarding/step-1")
+  return
+}
+
+// Check onboarding progress
+const { data: settings } = await supabase
+  .from("household_settings")
+  .select("onboarding_step")
+  .eq("household_id", link.household_id)
+  .single()
+
+// Incomplete onboarding → resume where left off
+if (settings.onboarding_step < 99) {
+  router.push(`/onboarding/step-${settings.onboarding_step}`)
+  return
+}
+
+// Fully set up → go to dashboard
+router.push("/dashboard")
+
+}
+
   }
 
   return (
