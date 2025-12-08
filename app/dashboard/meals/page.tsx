@@ -11,12 +11,12 @@ import {
   SelectItem,
   SelectValue,
 } from "@/components/ui/select"
-
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 
-// -------------------------------
-// FIX: Explicit Supabase typing
-// -------------------------------
+// -------------------------------------------------------------------
+// TYPES — clean separation to avoid future Vercel/TS issues
+// -------------------------------------------------------------------
+
 type MealRecord = {
   id: string
   name: string
@@ -24,28 +24,33 @@ type MealRecord = {
   created_by?: string | null
 }
 
-type HouseholdMeal = {
+type MealWithRating = MealRecord & {
   rating: string
-  meals: MealRecord | null    // ← CRITICAL FIX
+}
+
+type HouseholdMealRow = {
+  rating: string
+  meals: MealRecord | null
 }
 
 export default function MealsPage() {
   const [householdId, setHouseholdId] = useState<string | null>(null)
-  const [meals, setMeals] = useState<MealRecord[]>([])
-  const [foods, setFoods] = useState<MealRecord[]>([])
+  const [meals, setMeals] = useState<MealWithRating[]>([])
+  const [foods, setFoods] = useState<MealWithRating[]>([])
   const [newMeal, setNewMeal] = useState("")
   const [newFood, setNewFood] = useState("")
   const [loading, setLoading] = useState(true)
 
-  // ---------------------------------------
-  // Load household + all meals/foods
-  // ---------------------------------------
+  // -------------------------------------------------------------------
+  // LOAD DATA
+  // -------------------------------------------------------------------
   useEffect(() => {
     async function load() {
       const { data: sessionData } = await supabase.auth.getSession()
       const user = sessionData.session?.user
       if (!user) return
 
+      // Get household
       const { data: link } = await supabase
         .from("user_households")
         .select("household_id")
@@ -55,32 +60,32 @@ export default function MealsPage() {
       if (!link?.household_id) return
       setHouseholdId(link.household_id)
 
-      // ---------------------------
-      // FIX: Use typed Supabase call
-      // ---------------------------
-      const { data: rows, error } = await supabase
+      // Get meals + ratings
+      const { data, error } = await supabase
         .from("household_meals")
         .select("rating, meals(*)") as unknown as {
-        data: HouseholdMeal[] | null
+        data: HouseholdMealRow[] | null
         error: any
       }
 
       if (error) console.error(error)
+      const rows = data ?? []
 
-      const ratings = rows ?? []
-
-      const mealList = ratings
-        .filter((entry) => entry.meals?.type === "meal")
-        .map((entry) => ({
-          ...entry.meals!,
-          rating: entry.rating,
+      // -----------------------
+      // Build Meals & Foods lists
+      // -----------------------
+      const mealList: MealWithRating[] = rows
+        .filter((row) => row.meals?.type === "meal")
+        .map((row) => ({
+          ...(row.meals as MealRecord),
+          rating: row.rating,
         }))
 
-      const foodList = ratings
-        .filter((entry) => entry.meals?.type === "food")
-        .map((entry) => ({
-          ...entry.meals!,
-          rating: entry.rating,
+      const foodList: MealWithRating[] = rows
+        .filter((row) => row.meals?.type === "food")
+        .map((row) => ({
+          ...(row.meals as MealRecord),
+          rating: row.rating,
         }))
 
       setMeals(mealList)
@@ -91,9 +96,9 @@ export default function MealsPage() {
     load()
   }, [])
 
-  // ---------------------------------------
-  // Add Meal / Food
-  // ---------------------------------------
+  // -------------------------------------------------------------------
+  // ADD MEAL / FOOD
+  // -------------------------------------------------------------------
   async function addItem(type: "meal" | "food") {
     if (!householdId) return
 
@@ -102,10 +107,7 @@ export default function MealsPage() {
 
     const { data: created, error } = await supabase
       .from("meals")
-      .insert({
-        name,
-        type,
-      })
+      .insert({ name, type })
       .select()
       .single()
 
@@ -120,18 +122,20 @@ export default function MealsPage() {
       rating: "green",
     })
 
+    const entry: MealWithRating = { ...created, rating: "green" }
+
     if (type === "meal") {
-      setMeals((m) => [...m, { ...created, rating: "green" }])
+      setMeals((m) => [...m, entry])
       setNewMeal("")
     } else {
-      setFoods((f) => [...f, { ...created, rating: "green" }])
+      setFoods((f) => [...f, entry])
       setNewFood("")
     }
   }
 
-  // ---------------------------------------
-  // Update Rating
-  // ---------------------------------------
+  // -------------------------------------------------------------------
+  // UPDATE RATING
+  // -------------------------------------------------------------------
   async function updateRating(mealId: string, rating: string) {
     if (!householdId) return
 
@@ -145,9 +149,9 @@ export default function MealsPage() {
     setFoods((f) => f.map((x) => (x.id === mealId ? { ...x, rating } : x)))
   }
 
-  // ---------------------------------------
-  // Delete Item
-  // ---------------------------------------
+  // -------------------------------------------------------------------
+  // DELETE ITEM
+  // -------------------------------------------------------------------
   async function deleteItem(mealId: string) {
     if (!householdId) return
 
@@ -158,11 +162,11 @@ export default function MealsPage() {
     setFoods((f) => f.filter((x) => x.id !== mealId))
   }
 
+  // -------------------------------------------------------------------
+  // UI RENDER
+  // -------------------------------------------------------------------
   if (loading) return <p>Loading…</p>
 
-  // ---------------------------------------
-  // UI
-  // ---------------------------------------
   return (
     <div>
       <h1 className="text-4xl font-bold mb-6">Meals & Foods</h1>
@@ -173,7 +177,7 @@ export default function MealsPage() {
           <TabsTrigger value="foods">Foods</TabsTrigger>
         </TabsList>
 
-        {/* Meals Tab */}
+        {/* ---------------- Meals Tab ---------------- */}
         <TabsContent value="meals">
           <div className="space-y-6">
             <div className="flex gap-4">
@@ -186,7 +190,10 @@ export default function MealsPage() {
             </div>
 
             {meals.map((item) => (
-              <div key={item.id} className="flex items-center justify-between p-4 bg-white rounded shadow">
+              <div
+                key={item.id}
+                className="flex items-center justify-between p-4 bg-white rounded shadow"
+              >
                 <div className="font-medium">{item.name}</div>
 
                 <div className="flex items-center gap-4">
@@ -210,7 +217,7 @@ export default function MealsPage() {
           </div>
         </TabsContent>
 
-        {/* Foods Tab */}
+        {/* ---------------- Foods Tab ---------------- */}
         <TabsContent value="foods">
           <div className="space-y-6">
             <div className="flex gap-4">
@@ -223,7 +230,10 @@ export default function MealsPage() {
             </div>
 
             {foods.map((item) => (
-              <div key={item.id} className="flex items-center justify-between p-4 bg-white rounded shadow">
+              <div
+                key={item.id}
+                className="flex items-center justify-between p-4 bg-white rounded shadow"
+              >
                 <div className="font-medium">{item.name}</div>
 
                 <div className="flex items-center gap-4">
