@@ -4,8 +4,14 @@ import { useEffect, useState } from "react"
 import { supabase } from "@/lib/supabaseClient"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select"
-import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectTrigger,
+  SelectContent,
+  SelectItem,
+  SelectValue,
+} from "@/components/ui/select"
+
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 
 export default function MealsPage() {
@@ -36,22 +42,39 @@ export default function MealsPage() {
 
       setHouseholdId(link.household_id)
 
-      // Load all meals for household
-      const { data: mealRatings } = await supabase
+      // Load all household meals with rating + meal record
+      const { data: mealRatings, error } = await supabase
         .from("household_meals")
-        .select("meal_id, rating, meals(*)")
+        .select("rating, meals(*)")
         .eq("household_id", link.household_id)
 
-      const mealList = mealRatings
-        ?.filter((entry) => entry.meals.type === "meal")
-        .map((entry) => ({ ...entry.meals, rating: entry.rating }))
+      if (error) console.error(error)
 
-      const foodList = mealRatings
-        ?.filter((entry) => entry.meals.type === "food")
-        .map((entry) => ({ ...entry.meals, rating: entry.rating }))
+      const ratings = mealRatings || []
 
-      setMeals(mealList || [])
-      setFoods(foodList || [])
+      // --------------------------
+      // Build Meals list safely
+      // --------------------------
+      const mealList = ratings
+        .filter((entry) => entry.meals?.type === "meal")
+        .map((entry) => ({
+          ...entry.meals,
+          rating: entry.rating,
+        }))
+
+      // --------------------------
+      // Build Foods list safely
+      // --------------------------
+      const foodList = ratings
+        .filter((entry) => entry.meals?.type === "food")
+        .map((entry) => ({
+          ...entry.meals,
+          rating: entry.rating,
+        }))
+
+      setMeals(mealList)
+      setFoods(foodList)
+
       setLoading(false)
     }
 
@@ -76,7 +99,10 @@ export default function MealsPage() {
       .select()
       .single()
 
-    if (error || !created) return
+    if (error || !created) {
+      console.error("Insert failed:", error)
+      return
+    }
 
     // Insert into household_meals with green rating
     await supabase.from("household_meals").insert({
@@ -107,6 +133,7 @@ export default function MealsPage() {
       .eq("household_id", householdId)
       .eq("meal_id", mealId)
 
+    // Update UI
     setMeals((m) => m.map((x) => (x.id === mealId ? { ...x, rating: newRating } : x)))
     setFoods((f) => f.map((x) => (x.id === mealId ? { ...x, rating: newRating } : x)))
   }
@@ -126,6 +153,9 @@ export default function MealsPage() {
 
   if (loading) return <p>Loading...</p>
 
+  // ----------------------------------------------------------------
+  // UI
+  // ----------------------------------------------------------------
   return (
     <div>
       <h1 className="text-4xl font-bold mb-6">Meals & Foods</h1>
@@ -222,6 +252,7 @@ export default function MealsPage() {
                       </SelectContent>
                     </Select>
 
+                    {/* Delete */}
                     <Button
                       variant="destructive"
                       onClick={() => deleteItem(item.id)}
