@@ -3,32 +3,46 @@
 import { useEffect, useState } from "react"
 import { supabase } from "@/lib/supabaseClient"
 import { Button } from "@/components/ui/button"
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select"
+import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select"
 
-type DayPlan = {
-  lunch: string | null
-  dinner: string | null
+type PlannerSlot = {
+  id?: string
+  name: string
+  mealId?: string
 }
 
-const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+type DayPlan = {
+  lunch: PlannerSlot | null
+  dinner: PlannerSlot | null
+}
+
+const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 export default function PlannerPage() {
   const [householdId, setHouseholdId] = useState<string | null>(null)
-  const [availableMeals, setAvailableMeals] = useState<any[]>([])
-  const [plan, setPlan] = useState<Record<string, DayPlan>>({})
-  const [saving, setSaving] = useState(false)
+
+  // This will eventually be filled by AI. For now default empty.
+  const [plan, setPlan] = useState<Record<string, DayPlan>>(() => {
+    const empty: Record<string, DayPlan> = {}
+    days.forEach((day) => {
+      empty[day] = { lunch: null, dinner: null }
+    })
+    return empty
+  })
+
+  const [allMeals, setAllMeals] = useState<{ id: string; name: string }[]>([])
   const [loading, setLoading] = useState(true)
 
-  // ------------------------------------------------------
-  // Load household + meals + any existing weekly plan
-  // ------------------------------------------------------
+  // -------------------------------------------------------------
+  // Load household + load meals user can pick from
+  // -------------------------------------------------------------
   useEffect(() => {
     async function load() {
-      const { data: sessionData } = await supabase.auth.getSession()
-      const user = sessionData.session?.user
+      const { data: session } = await supabase.auth.getSession()
+      const user = session.session?.user
       if (!user) return
 
-      // Find household
+      // Household
       const { data: link } = await supabase
         .from("user_households")
         .select("household_id")
@@ -38,145 +52,129 @@ export default function PlannerPage() {
       if (!link?.household_id) return
       setHouseholdId(link.household_id)
 
-      // Load meals (green + neutral only)
-      const { data: items } = await supabase
+      // Fetch meals (ONLY meals, not foods)
+      const { data: ratings } = await supabase
         .from("household_meals")
-        .select("rating, meals(*)")
-        .eq("household_id", link.household_id)
+        .select("meals(*)")
 
-      const allowed = items
-        ?.filter((i) => i.rating === "green" || i.rating === "neutral")
-        .map((i) => ({ ...i.meals }))
+      const meals =
+        ratings
+          ?.filter((r) => r.meals?.type === "meal")
+          .map((r) => ({
+            id: r.meals!.id,
+            name: r.meals!.name,
+          })) ?? []
 
-      setAvailableMeals(allowed || [])
-
-      // Load an existing weekly plan for the current week
-      const today = new Date()
-      const monday = new Date(today)
-      monday.setDate(today.getDate() - ((today.getDay() + 6) % 7)) // ensure Monday start
-
-      const { data: planRow } = await supabase
-        .from("weekly_plans")
-        .select("*")
-        .eq("household_id", link.household_id)
-        .eq("week_start", monday.toISOString().split("T")[0])
-        .maybeSingle()
-
-      if (planRow?.plan_json) {
-        setPlan(planRow.plan_json)
-      } else {
-        // Default empty plan
-        const blank: Record<string, DayPlan> = {}
-        DAYS.forEach((d) => {
-          blank[d] = { lunch: null, dinner: null }
-        })
-        setPlan(blank)
-      }
-
+      setAllMeals(meals)
       setLoading(false)
     }
 
     load()
   }, [])
 
-  // ------------------------------------------------------
-  // Update meal for a specific day + time
-  // ------------------------------------------------------
-  function updateSlot(day: string, slot: "lunch" | "dinner", value: string | null) {
+  // -------------------------------------------------------------
+  // Update a slot’s meal
+  // -------------------------------------------------------------
+  function updateSlot(day: string, slot: "lunch" | "dinner", mealId: string) {
+    const meal = allMeals.find((m) => m.id === mealId)
+    if (!meal) return
+
     setPlan((prev) => ({
       ...prev,
-      [day]: { ...prev[day], [slot]: value },
+      [day]: {
+        ...prev[day],
+        [slot]: {
+          id: meal.id,
+          name: meal.name,
+        },
+      },
     }))
   }
 
-  // ------------------------------------------------------
-  // Save the weekly plan
-  // ------------------------------------------------------
-  async function savePlan() {
-    if (!householdId) return
-    setSaving(true)
-
-    const today = new Date()
-    const monday = new Date(today)
-    monday.setDate(today.getDate() - ((today.getDay() + 6) % 7)) // Monday
-
-    await supabase
-      .from("weekly_plans")
-      .upsert({
-        household_id: householdId,
-        week_start: monday.toISOString().split("T")[0],
-        plan_json: plan,
-      })
-
-    setSaving(false)
-    alert("Weekly plan saved!")
+  // -------------------------------------------------------------
+  // Replace a slot with an empty value
+  // -------------------------------------------------------------
+  function clearSlot(day: string, slot: "lunch" | "dinner") {
+    setPlan((prev) => ({
+      ...prev,
+      [day]: { ...prev[day], [slot]: null },
+    }))
   }
 
-  if (loading) return <p>Loading…</p>
+  // -------------------------------------------------------------
+  // UI RENDER
+  // -------------------------------------------------------------
+  if (loading) return <p>Loading planner…</p>
 
   return (
-    <div className="space-y-8">
-      <h1 className="text-4xl font-bold">Weekly Meal Planner</h1>
-      <p className="text-gray-600">Select meals for lunch and dinner each day.</p>
+    <div>
+      <h1 className="text-4xl font-bold mb-8">Weekly Meal Planner</h1>
 
-      {/* ---------------------- Planner Grid ---------------------- */}
-      <div className="grid grid-cols-3 gap-4 font-medium mb-4">
-        <div>Day</div>
-        <div>Lunch</div>
-        <div>Dinner</div>
+      <div className="grid grid-cols-3 gap-6">
+        <div></div>
+        <div className="text-center font-semibold">Lunch</div>
+        <div className="text-center font-semibold">Dinner</div>
+
+        {days.map((day) => (
+          <div key={day} className="contents">
+            {/* Day label */}
+            <div className="font-bold text-lg">{day}</div>
+
+            {/* Lunch slot */}
+            <div className="space-y-2">
+              <Select
+                value={plan[day].lunch?.id || ""}
+                onValueChange={(v) => updateSlot(day, "lunch", v)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select meal" />
+                </SelectTrigger>
+                <SelectContent>
+                  {allMeals.map((m) => (
+                    <SelectItem key={m.id} value={m.id}>
+                      {m.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              {plan[day].lunch && (
+                <Button variant="outline" onClick={() => clearSlot(day, "lunch")}>
+                  Clear
+                </Button>
+              )}
+            </div>
+
+            {/* Dinner slot */}
+            <div className="space-y-2">
+              <Select
+                value={plan[day].dinner?.id || ""}
+                onValueChange={(v) => updateSlot(day, "dinner", v)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select meal" />
+                </SelectTrigger>
+                <SelectContent>
+                  {allMeals.map((m) => (
+                    <SelectItem key={m.id} value={m.id}>
+                      {m.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              {plan[day].dinner && (
+                <Button variant="outline" onClick={() => clearSlot(day, "dinner")}>
+                  Clear
+                </Button>
+              )}
+            </div>
+          </div>
+        ))}
       </div>
 
-      {DAYS.map((day) => (
-        <div key={day} className="grid grid-cols-3 gap-4 items-center mb-4 bg-white p-4 rounded shadow">
-          <div className="font-semibold">{day}</div>
-
-          {/* Lunch selector */}
-          <Select
-            value={plan[day]?.lunch ?? ""}
-            onValueChange={(v) => updateSlot(day, "lunch", v)}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Choose lunch…" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">None</SelectItem>
-              {availableMeals.map((m) => (
-                <SelectItem key={m.id} value={m.name}>
-                  {m.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          {/* Dinner selector */}
-          <Select
-            value={plan[day]?.dinner ?? ""}
-            onValueChange={(v) => updateSlot(day, "dinner", v)}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Choose dinner…" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">None</SelectItem>
-              {availableMeals.map((m) => (
-                <SelectItem key={m.id} value={m.name}>
-                  {m.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      ))}
-
-      {/* ---------------------- Actions ---------------------- */}
-      <div className="flex gap-4 mt-10">
-        <Button onClick={savePlan} disabled={saving}>
-          {saving ? "Saving..." : "Save Weekly Plan"}
-        </Button>
-
-        <Button variant="outline" onClick={() => alert("AI not added yet!")}>
-          Generate with AI (coming soon)
-        </Button>
+      <div className="mt-12 text-center">
+        <Button className="text-lg px-8 py-4">Save Plan</Button>
       </div>
     </div>
   )
