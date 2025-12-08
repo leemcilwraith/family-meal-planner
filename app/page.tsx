@@ -1,23 +1,28 @@
-export default function Home() {
-  return (
-    <main style={{ padding: "2rem", fontFamily: "system-ui, sans-serif" }}>
-      <h1>Family Meal Planner</h1>
-      <p>Welcome! This is your base app.</p>
+"use client"
 
-      <div style={{ marginTop: "1.5rem", display: "flex", gap: "1rem" }}>
-        <a
-          href="/signup"
-          style={{ padding: "0.5rem 1rem", border: "1px solid #ccc", borderRadius: 4 }}
-        >
-          Sign up
-        </a>
-        <a
-          href="/login"
-          style={{ padding: "0.5rem 1rem", border: "1px solid #ccc", borderRadius: 4 }}
-        >
-          Log in
-        </a>
+import { useRouter } from "next/navigation"
+import { Button } from "@/components/ui/button"
+
+export default function Home() {
+  const router = useRouter()
+
+  return (
+    <main className="min-h-screen flex flex-col items-center justify-center text-center px-6">
+      <div className="space-y-8 max-w-xl">
+        <h1 className="text-4xl font-bold">Family Meal Planner</h1>
+        <p className="text-gray-600 text-lg">
+          Create personalised weekly meal plans tailored to your family's tastes.
+        </p>
+
+        <div className="flex flex-col space-y-4 pt-4">
+          <Button className="w-full py-6 text-lg" onClick={() => router.push("/signup")}>
+            Sign Up
+          </Button>
+          <Button variant="outline" className="w-full py-6 text-lg" onClick={() => router.push("/login")}>
+            Login
+          </Button>
+        </div>
       </div>
     </main>
-  );
+  )
 }

@@ -18,6 +18,7 @@ export default function Step4() {
   const [meals, setMeals] = useState<Entry[]>([])
   const [foods, setFoods] = useState<Entry[]>([])
   const [error, setError] = useState("")
+  const [loading, setLoading] = useState(true)
 
   // -----------------------------
   // Load household + onboarding state
@@ -26,12 +27,13 @@ export default function Step4() {
     async function loadHousehold() {
       const { data: sessionData } = await supabase.auth.getSession()
       const user = sessionData.session?.user
+
       if (!user) {
         router.push("/login")
         return
       }
 
-      // Check user → household link
+      // Household link
       const { data: link } = await supabase
         .from("user_households")
         .select("household_id")
@@ -46,19 +48,25 @@ export default function Step4() {
       const householdId = link.household_id
       setHouseholdId(householdId)
 
-      // Check onboarding progress
+      // Load settings
       const { data: settings } = await supabase
         .from("household_settings")
         .select("onboarding_step")
         .eq("household_id", householdId)
         .single()
 
-      if (!settings) return
+      if (!settings) {
+        router.push("/onboarding/step-1")
+        return
+      }
 
+      // Resume forward
       if (settings.onboarding_step > 4) {
         router.push(`/onboarding/step-${settings.onboarding_step}`)
         return
       }
+
+      setLoading(false)
     }
 
     loadHousehold()
@@ -103,9 +111,7 @@ export default function Step4() {
     const user = sessionData.session?.user
     if (!user) return
 
-    // -----------------------------
-    // Insert Meals (type = 'meal')
-    // -----------------------------
+    // Insert Meals
     for (const item of meals) {
       if (!item.name.trim()) continue
 
@@ -120,19 +126,19 @@ export default function Step4() {
         .single()
 
       if (newMeal) {
-        await supabase.from("household_meals").insert({
-          household_id: householdId,
-          meal_id: newMeal.id,
-          rating: "green",
-        })
+        await supabase
+          .from("household_meals")
+          .insert({
+            household_id: householdId,
+            meal_id: newMeal.id,
+            rating: "green",
+          })
       }
 
       if (error) console.error(error)
     }
 
-    // -----------------------------
-    // Insert Foods (type = 'food')
-    // -----------------------------
+    // Insert Foods
     for (const item of foods) {
       if (!item.name.trim()) continue
 
@@ -147,26 +153,36 @@ export default function Step4() {
         .single()
 
       if (newFood) {
-        await supabase.from("household_meals").insert({
-          household_id: householdId,
-          meal_id: newFood.id,
-          rating: "green",
-        })
+        await supabase
+          .from("household_meals")
+          .insert({
+            household_id: householdId,
+            meal_id: newFood.id,
+            rating: "green",
+          })
       }
 
       if (error) console.error(error)
     }
 
-    // -----------------------------
     // Update onboarding progress
-    // -----------------------------
     await supabase
       .from("household_settings")
       .update({ onboarding_step: 5 })
       .eq("household_id", householdId)
 
-    // Go to final step
     router.push("/onboarding/complete")
+  }
+
+  // -----------------------------
+  // Prevent rendering before ready
+  // -----------------------------
+  if (loading) {
+    return (
+      <div className="pt-20 text-center">
+        <h1 className="text-2xl font-semibold">Loading…</h1>
+      </div>
+    )
   }
 
   // -----------------------------
@@ -176,18 +192,13 @@ export default function Step4() {
     <div className="space-y-10 pt-10">
       <h1 className="text-4xl font-semibold">Tell us what your children always eat</h1>
       <p className="text-gray-600">
-        Add reliable meals and foods. This builds your Green List and helps personalise your planner.
+        Add reliable meals and foods. This builds your Green List.
       </p>
 
       <div className="w-full max-w-xl mx-auto space-y-12">
 
-        {/* Meals section */}
         <section className="space-y-4">
           <h2 className="text-2xl font-semibold">Meals your children reliably eat</h2>
-          <p className="text-gray-500 text-sm">
-            Examples: roast dinner, spaghetti bolognese, chicken curry
-          </p>
-
           {meals.map((m) => (
             <Input
               key={m.id}
@@ -197,19 +208,13 @@ export default function Step4() {
               className="mt-2"
             />
           ))}
-
           <Button variant="outline" onClick={addMeal}>
             + Add Meal
           </Button>
         </section>
 
-        {/* Foods section */}
         <section className="space-y-4">
           <h2 className="text-2xl font-semibold">Foods your children reliably eat</h2>
-          <p className="text-gray-500 text-sm">
-            Examples: fish fingers, chips, sausages, pasta shapes
-          </p>
-
           {foods.map((f) => (
             <Input
               key={f.id}
@@ -219,7 +224,6 @@ export default function Step4() {
               className="mt-2"
             />
           ))}
-
           <Button variant="outline" onClick={addFood}>
             + Add Food
           </Button>

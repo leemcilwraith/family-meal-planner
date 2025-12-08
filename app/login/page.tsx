@@ -3,128 +3,123 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { supabase } from "@/lib/supabaseClient"
-
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Button } from "@/components/ui/button"
 
 export default function LoginPage() {
   const router = useRouter()
+
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
-  const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
 
-  async function handleLogin(e: React.FormEvent) {
+  async function handleLogin(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
     setError("")
-    setLoading(true)
 
-    const { error } = await supabase.auth.signInWithPassword({
+    // 1️⃣ Attempt login
+    const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,
     })
-
-    setLoading(false)
 
     if (error) {
       setError(error.message)
       return
     }
 
-    // After successful login:
-const { data: link } = await supabase
-  .from("user_households")
-  .select("household_id")
-  .eq("user_id", user.id)
-  .maybeSingle()
+    const user = data.user
+    if (!user) {
+      setError("Unable to retrieve user after login.")
+      return
+    }
 
-if (!link) {
-  router.push("/onboarding/step-1")
-} else {
-  // After successful login:
-const { data: link } = await supabase
-  .from("user_households")
-  .select("household_id")
-  .eq("user_id", user.id)
-  .maybeSingle()
+    // 2️⃣ Check if user has a household link
+    const { data: link } = await supabase
+      .from("user_households")
+      .select("household_id")
+      .eq("user_id", user.id)
+      .maybeSingle()
 
-// No household yet? Start onboarding.
-if (!link?.household_id) {
-  router.push("/onboarding/step-1")
-  return
-}
+    if (!link?.household_id) {
+      router.push("/onboarding/step-1")
+      return
+    }
 
-// Check onboarding progress
-const { data: settings } = await supabase
-  .from("household_settings")
-  .select("onboarding_step")
-  .eq("household_id", link.household_id)
-  .single()
+    // 3️⃣ Check onboarding progress
+    const { data: settings } = await supabase
+      .from("household_settings")
+      .select("onboarding_step")
+      .eq("household_id", link.household_id)
+      .single()
 
-// Incomplete onboarding → resume where left off
-if (settings.onboarding_step < 99) {
-  router.push(`/onboarding/step-${settings.onboarding_step}`)
-  return
-}
+    // No settings row yet → send to step 1
+    if (!settings) {
+      router.push("/onboarding/step-1")
+      return
+    }
 
-// Fully set up → go to dashboard
-router.push("/dashboard")
+    // Settings exist → check progress
+    if (settings.onboarding_step < 99) {
+      router.push(`/onboarding/step-${settings.onboarding_step}`)
+      return
+    }
 
-}
-
+    // 4️⃣ Fully completed onboarding → go to dashboard
+    router.push("/dashboard")
   }
 
   return (
-    <div className="flex justify-center py-10">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <CardTitle className="text-2xl font-bold">Welcome Back</CardTitle>
-          <p className="text-sm text-muted-foreground">
-            Login to access your meal planner.
-          </p>
-        </CardHeader>
+    <div className="min-h-screen flex flex-col items-center justify-center px-6">
+      <div className="w-full max-w-md space-y-8">
+        <h1 className="text-3xl font-semibold text-center">Login</h1>
 
-        <CardContent>
-          <form className="space-y-4" onSubmit={handleLogin}>
-            <div>
-              <Label>Email</Label>
-              <Input
-                required
-                type="email"
-                placeholder="you@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </div>
+        <form 
+  onSubmit={handleLogin} 
+  className="space-y-6" 
+  autoComplete="off"
+>
+  <div className="space-y-2">
+    <Label>Email</Label>
+    <Input
+      type="email"
+      autoComplete="off"
+      data-lpignore="true"
+      data-lpblock="true"
+      value={email}
+      onChange={(e) => setEmail(e.target.value)}
+    />
+  </div>
 
-            <div>
-              <Label>Password</Label>
-              <Input
-                required
-                type="password"
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </div>
+  <div className="space-y-2">
+    <Label>Password</Label>
+    <Input
+      type="password"
+      autoComplete="new-password"
+      data-lpignore="true"
+      data-lpblock="true"
+      value={password}
+      onChange={(e) => setPassword(e.target.value)}
+    />
+  </div>
 
-            {error && <p className="text-red-600 text-sm">{error}</p>}
 
-            <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? "Logging in..." : "Login"}
-            </Button>
+          {error && <p className="text-red-500 text-center">{error}</p>}
 
-            <p className="text-sm pt-2 text-center">
-              Don’t have an account?{" "}
-              <a href="/signup" className="underline">
-                Create one
-              </a>
-            </p>
-          </form>
-        </CardContent>
-      </Card>
+          <Button type="submit" className="w-full py-6 text-lg">
+            Login
+          </Button>
+        </form>
+
+        <Button
+          variant="outline"
+          className="w-full py-6 text-lg"
+          onClick={() => router.push("/signup")}
+        >
+          Create an Account
+        </Button>
+      </div>
     </div>
   )
 }

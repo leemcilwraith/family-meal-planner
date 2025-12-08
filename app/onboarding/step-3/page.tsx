@@ -15,6 +15,7 @@ export default function Step3() {
   const [kidsAppetite, setKidsAppetite] = useState("medium")
   const [prepPreference, setPrepPreference] = useState("standard")
   const [riskLevel, setRiskLevel] = useState(5)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     async function load() {
@@ -36,14 +37,21 @@ export default function Step3() {
         return
       }
 
-      setHouseholdId(link.household_id)
+      const householdId = link.household_id
+      setHouseholdId(householdId)
 
       const { data: settings } = await supabase
         .from("household_settings")
         .select("*")
-        .eq("household_id", link.household_id)
+        .eq("household_id", householdId)
         .single()
 
+      if (!settings) {
+        router.push("/onboarding/step-1")
+        return
+      }
+
+      // Resume logic
       if (settings.onboarding_step > 3) {
         router.push(`/onboarding/step-${settings.onboarding_step}`)
         return
@@ -52,10 +60,12 @@ export default function Step3() {
       setKidsAppetite(settings.kids_appetite ?? "medium")
       setPrepPreference(settings.prep_time_preference ?? "standard")
       setRiskLevel(settings.risk_level ?? 5)
+
+      setLoading(false)
     }
 
     load()
-  }, [])
+  }, [router])
 
   async function next() {
     if (!householdId) return
@@ -71,6 +81,15 @@ export default function Step3() {
       .eq("household_id", householdId)
 
     router.push("/onboarding/step-4")
+  }
+
+  // Prevent UI from rendering too early
+  if (loading) {
+    return (
+      <div className="pt-20 text-center">
+        <h1 className="text-2xl font-semibold">Loading...</h1>
+      </div>
+    )
   }
 
   return (

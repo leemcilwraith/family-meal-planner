@@ -13,16 +13,20 @@ export default function Step2() {
   const [householdId, setHouseholdId] = useState<string | null>(null)
   const [adults, setAdults] = useState(2)
   const [children, setChildren] = useState(1)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     async function load() {
+      // Get session
       const { data: sessionData } = await supabase.auth.getSession()
       const user = sessionData.session?.user
+
       if (!user) {
         router.push("/login")
         return
       }
 
+      // Get household
       const { data: link } = await supabase
         .from("user_households")
         .select("household_id")
@@ -34,25 +38,48 @@ export default function Step2() {
         return
       }
 
-      setHouseholdId(link.household_id)
+      const householdId = link.household_id
+      setHouseholdId(householdId)
 
+      // Load settings
       const { data: settings } = await supabase
         .from("household_settings")
         .select("*")
-        .eq("household_id", link.household_id)
+        .eq("household_id", householdId)
         .single()
 
-      if (settings.onboarding_step > 2) {
-        router.push(`/onboarding/step-${settings.onboarding_step}`)
+      if (!settings) {
+        console.warn("No household settings found — redirecting to step 1")
+        router.push("/onboarding/step-1")
+        return
       }
 
+      // Resume logic
+      if (settings.onboarding_step > 2) {
+        router.push(`/onboarding/step-${settings.onboarding_step}`)
+        return
+      }
+
+      // Populate fields
       setAdults(settings.adults ?? 2)
       setChildren(settings.children ?? 1)
+
+      setLoading(false)
     }
 
     load()
-  }, [])
+  }, [router])
 
+  // ❗ Prevent rendering form until settings are loaded
+  if (loading) {
+    return (
+      <div className="pt-20 text-center">
+        <h1 className="text-2xl font-semibold">Loading...</h1>
+      </div>
+    )
+  }
+
+  // Submit handler
   async function next() {
     if (!householdId) return
 
