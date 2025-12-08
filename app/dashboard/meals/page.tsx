@@ -14,24 +14,38 @@ import {
 
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 
+// -------------------------------
+// FIX: Explicit Supabase typing
+// -------------------------------
+type MealRecord = {
+  id: string
+  name: string
+  type: "meal" | "food"
+  created_by?: string | null
+}
+
+type HouseholdMeal = {
+  rating: string
+  meals: MealRecord | null    // ← CRITICAL FIX
+}
+
 export default function MealsPage() {
   const [householdId, setHouseholdId] = useState<string | null>(null)
-  const [meals, setMeals] = useState<any[]>([])
-  const [foods, setFoods] = useState<any[]>([])
+  const [meals, setMeals] = useState<MealRecord[]>([])
+  const [foods, setFoods] = useState<MealRecord[]>([])
   const [newMeal, setNewMeal] = useState("")
   const [newFood, setNewFood] = useState("")
   const [loading, setLoading] = useState(true)
 
-  // ----------------------------------------------------------------
-  // Load household + meals + foods
-  // ----------------------------------------------------------------
+  // ---------------------------------------
+  // Load household + all meals/foods
+  // ---------------------------------------
   useEffect(() => {
     async function load() {
       const { data: sessionData } = await supabase.auth.getSession()
       const user = sessionData.session?.user
       if (!user) return
 
-      // Get household ID
       const { data: link } = await supabase
         .from("user_households")
         .select("household_id")
@@ -39,57 +53,53 @@ export default function MealsPage() {
         .maybeSingle()
 
       if (!link?.household_id) return
-
       setHouseholdId(link.household_id)
 
-      // Load all household meals with rating + meal record
-      const { data: mealRatings, error } = await supabase
+      // ---------------------------
+      // FIX: Use typed Supabase call
+      // ---------------------------
+      const { data: rows, error } = await supabase
         .from("household_meals")
-        .select("rating, meals(*)")
-        .eq("household_id", link.household_id)
+        .select("rating, meals(*)") as unknown as {
+        data: HouseholdMeal[] | null
+        error: any
+      }
 
       if (error) console.error(error)
 
-      const ratings = mealRatings || []
+      const ratings = rows ?? []
 
-      // --------------------------
-      // Build Meals list safely
-      // --------------------------
       const mealList = ratings
         .filter((entry) => entry.meals?.type === "meal")
         .map((entry) => ({
-          ...entry.meals,
+          ...entry.meals!,
           rating: entry.rating,
         }))
 
-      // --------------------------
-      // Build Foods list safely
-      // --------------------------
       const foodList = ratings
         .filter((entry) => entry.meals?.type === "food")
         .map((entry) => ({
-          ...entry.meals,
+          ...entry.meals!,
           rating: entry.rating,
         }))
 
       setMeals(mealList)
       setFoods(foodList)
-
       setLoading(false)
     }
 
     load()
   }, [])
 
-  // ----------------------------------------------------------------
-  // Add new meal or food
-  // ----------------------------------------------------------------
+  // ---------------------------------------
+  // Add Meal / Food
+  // ---------------------------------------
   async function addItem(type: "meal" | "food") {
     if (!householdId) return
+
     const name = type === "meal" ? newMeal.trim() : newFood.trim()
     if (!name) return
 
-    // Insert into meals table
     const { data: created, error } = await supabase
       .from("meals")
       .insert({
@@ -100,18 +110,16 @@ export default function MealsPage() {
       .single()
 
     if (error || !created) {
-      console.error("Insert failed:", error)
+      console.error(error)
       return
     }
 
-    // Insert into household_meals with green rating
     await supabase.from("household_meals").insert({
       household_id: householdId,
       meal_id: created.id,
       rating: "green",
     })
 
-    // Update UI
     if (type === "meal") {
       setMeals((m) => [...m, { ...created, rating: "green" }])
       setNewMeal("")
@@ -121,26 +129,25 @@ export default function MealsPage() {
     }
   }
 
-  // ----------------------------------------------------------------
-  // Update rating
-  // ----------------------------------------------------------------
-  async function updateRating(mealId: string, newRating: string) {
+  // ---------------------------------------
+  // Update Rating
+  // ---------------------------------------
+  async function updateRating(mealId: string, rating: string) {
     if (!householdId) return
 
     await supabase
       .from("household_meals")
-      .update({ rating: newRating })
+      .update({ rating })
       .eq("household_id", householdId)
       .eq("meal_id", mealId)
 
-    // Update UI
-    setMeals((m) => m.map((x) => (x.id === mealId ? { ...x, rating: newRating } : x)))
-    setFoods((f) => f.map((x) => (x.id === mealId ? { ...x, rating: newRating } : x)))
+    setMeals((m) => m.map((x) => (x.id === mealId ? { ...x, rating } : x)))
+    setFoods((f) => f.map((x) => (x.id === mealId ? { ...x, rating } : x)))
   }
 
-  // ----------------------------------------------------------------
-  // Delete meal or food
-  // ----------------------------------------------------------------
+  // ---------------------------------------
+  // Delete Item
+  // ---------------------------------------
   async function deleteItem(mealId: string) {
     if (!householdId) return
 
@@ -151,11 +158,11 @@ export default function MealsPage() {
     setFoods((f) => f.filter((x) => x.id !== mealId))
   }
 
-  if (loading) return <p>Loading...</p>
+  if (loading) return <p>Loading…</p>
 
-  // ----------------------------------------------------------------
+  // ---------------------------------------
   // UI
-  // ----------------------------------------------------------------
+  // ---------------------------------------
   return (
     <div>
       <h1 className="text-4xl font-bold mb-6">Meals & Foods</h1>
@@ -166,103 +173,77 @@ export default function MealsPage() {
           <TabsTrigger value="foods">Foods</TabsTrigger>
         </TabsList>
 
-        {/* ---------------- MEALS TAB ---------------- */}
+        {/* Meals Tab */}
         <TabsContent value="meals">
           <div className="space-y-6">
             <div className="flex gap-4">
               <Input
-                placeholder="Add a meal..."
+                placeholder="Add a meal…"
                 value={newMeal}
                 onChange={(e) => setNewMeal(e.target.value)}
               />
               <Button onClick={() => addItem("meal")}>Add</Button>
             </div>
 
-            <div className="space-y-3">
-              {meals.map((item) => (
-                <div
-                  key={item.id}
-                  className="flex items-center justify-between bg-white p-4 rounded shadow"
-                >
-                  <div className="font-medium">{item.name}</div>
+            {meals.map((item) => (
+              <div key={item.id} className="flex items-center justify-between p-4 bg-white rounded shadow">
+                <div className="font-medium">{item.name}</div>
 
-                  <div className="flex items-center gap-4">
-                    {/* Rating */}
-                    <Select
-                      value={item.rating}
-                      onValueChange={(v) => updateRating(item.id, v)}
-                    >
-                      <SelectTrigger className="w-24">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="green">Green</SelectItem>
-                        <SelectItem value="neutral">Neutral</SelectItem>
-                        <SelectItem value="red">Red</SelectItem>
-                      </SelectContent>
-                    </Select>
+                <div className="flex items-center gap-4">
+                  <Select value={item.rating} onValueChange={(v) => updateRating(item.id, v)}>
+                    <SelectTrigger className="w-24">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="green">Green</SelectItem>
+                      <SelectItem value="neutral">Neutral</SelectItem>
+                      <SelectItem value="red">Red</SelectItem>
+                    </SelectContent>
+                  </Select>
 
-                    {/* Delete */}
-                    <Button
-                      variant="destructive"
-                      onClick={() => deleteItem(item.id)}
-                    >
-                      Delete
-                    </Button>
-                  </div>
+                  <Button variant="destructive" onClick={() => deleteItem(item.id)}>
+                    Delete
+                  </Button>
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
           </div>
         </TabsContent>
 
-        {/* ---------------- FOODS TAB ---------------- */}
+        {/* Foods Tab */}
         <TabsContent value="foods">
           <div className="space-y-6">
             <div className="flex gap-4">
               <Input
-                placeholder="Add a food..."
+                placeholder="Add a food…"
                 value={newFood}
                 onChange={(e) => setNewFood(e.target.value)}
               />
               <Button onClick={() => addItem("food")}>Add</Button>
             </div>
 
-            <div className="space-y-3">
-              {foods.map((item) => (
-                <div
-                  key={item.id}
-                  className="flex items-center justify-between bg-white p-4 rounded shadow"
-                >
-                  <div className="font-medium">{item.name}</div>
+            {foods.map((item) => (
+              <div key={item.id} className="flex items-center justify-between p-4 bg-white rounded shadow">
+                <div className="font-medium">{item.name}</div>
 
-                  <div className="flex items-center gap-4">
-                    {/* Rating */}
-                    <Select
-                      value={item.rating}
-                      onValueChange={(v) => updateRating(item.id, v)}
-                    >
-                      <SelectTrigger className="w-24">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="green">Green</SelectItem>
-                        <SelectItem value="neutral">Neutral</SelectItem>
-                        <SelectItem value="red">Red</SelectItem>
-                      </SelectContent>
-                    </Select>
+                <div className="flex items-center gap-4">
+                  <Select value={item.rating} onValueChange={(v) => updateRating(item.id, v)}>
+                    <SelectTrigger className="w-24">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="green">Green</SelectItem>
+                      <SelectItem value="neutral">Neutral</SelectItem>
+                      <SelectItem value="red">Red</SelectItem>
+                    </SelectContent>
+                  </Select>
 
-                    {/* Delete */}
-                    <Button
-                      variant="destructive"
-                      onClick={() => deleteItem(item.id)}
-                    >
-                      Delete
-                    </Button>
-                  </div>
+                  <Button variant="destructive" onClick={() => deleteItem(item.id)}>
+                    Delete
+                  </Button>
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
           </div>
         </TabsContent>
       </Tabs>
