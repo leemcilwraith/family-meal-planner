@@ -1,62 +1,24 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { supabase } from "@/lib/supabaseClient"
+import { useState } from "react"
 import { Button } from "@/components/ui/button"
 
-type Plan = {
-  [day: string]: {
-    lunch: string
-    dinner: string
-  }
-}
+const DAYS = [
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+  "Sunday",
+]
 
 export default function PlannerPage() {
-  const [householdId, setHouseholdId] = useState<string | null>(null)
+  const [plan, setPlan] = useState<any | null>(null)
   const [loading, setLoading] = useState(false)
-  const [plan, setPlan] = useState<Plan | null>(null)
   const [error, setError] = useState("")
 
-  // Days of the week (fixed order)
-  const days = [
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-    "Sunday",
-  ]
-
-  // ------------------------------
-  // Load the user's household
-  // ------------------------------
-  useEffect(() => {
-    async function load() {
-      const { data: sessionData } = await supabase.auth.getSession()
-      const user = sessionData.session?.user
-      if (!user) return
-
-      const { data: link } = await supabase
-        .from("user_households")
-        .select("household_id")
-        .eq("user_id", user.id)
-        .maybeSingle()
-
-      if (link?.household_id) {
-        setHouseholdId(link.household_id)
-      }
-    }
-
-    load()
-  }, [])
-
-  // ------------------------------
-  // Generate plan via AI
-  // ------------------------------
   async function generatePlan() {
-    if (!householdId) return
-
     setLoading(true)
     setError("")
     setPlan(null)
@@ -64,61 +26,70 @@ export default function PlannerPage() {
     try {
       const res = await fetch("/api/generate-plan", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ householdId }),
+        body: JSON.stringify({
+          greenMeals: ["Roast Dinner", "Fish Fingers"], // placeholder — replace later
+          householdSettings: {
+            kids_appetite: "medium",
+            prep_time_preference: "standard",
+            risk_level: 5,
+          },
+        }),
       })
 
-      const json = await res.json()
+      const data = await res.json()
 
       if (!res.ok) {
-        setError(json.error || "AI failed to generate a plan")
-      } else {
-        setPlan(json.plan)
+        setError(data.error || "Failed to generate plan")
+        setLoading(false)
+        return
       }
+
+      setPlan(data.plan)
     } catch (err) {
-      console.error("AI error:", err)
-      setError("Unable to generate plan")
+      setError("Network error")
     }
 
     setLoading(false)
   }
 
-  // ------------------------------
-  // Render UI
-  // ------------------------------
   return (
-    <div className="space-y-8">
-      <h1 className="text-3xl font-semibold">Weekly Planner</h1>
+    <div className="max-w-3xl mx-auto space-y-10 pt-10">
+      <h1 className="text-4xl font-semibold">Weekly Meal Planner</h1>
 
-      <Button onClick={generatePlan} disabled={!householdId || loading}>
-        {loading ? "Generating…" : "Generate Weekly Plan"}
+      {/* Generate button */}
+      <Button onClick={generatePlan} disabled={loading} className="text-lg py-6">
+        {loading ? "Generating..." : "Generate Plan"}
       </Button>
 
+      {/* Error message */}
       {error && <p className="text-red-500">{error}</p>}
 
-      {/* No plan yet */}
-      {!plan && !loading && (
-        <p className="text-gray-600">Your plan will appear here once generated.</p>
-      )}
-
-      {/* Display generated plan */}
+      {/* Plan results */}
       {plan && (
-        <div className="grid grid-cols-3 gap-4 mt-6">
-          <div className="font-bold text-lg">Day</div>
-          <div className="font-bold text-lg">Lunch</div>
-          <div className="font-bold text-lg">Dinner</div>
+        <div className="space-y-6">
+          {DAYS.map((day) => (
+            <div key={day} className="border rounded-lg p-4 bg-white shadow-sm">
+              <h2 className="text-2xl font-semibold mb-3">{day}</h2>
 
-          {days.map((day) => (
-            <Fragment key={day}>
-              <div className="font-medium">{day}</div>
-              <div className="bg-gray-100 p-2 rounded">{plan[day]?.lunch}</div>
-              <div className="bg-gray-100 p-2 rounded">{plan[day]?.dinner}</div>
-            </Fragment>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <h3 className="font-semibold">Lunch</h3>
+                  <p className="text-gray-700">
+                    {plan[day]?.lunch || <span className="italic text-gray-400">No meal</span>}
+                  </p>
+                </div>
+
+                <div>
+                  <h3 className="font-semibold">Dinner</h3>
+                  <p className="text-gray-700">
+                    {plan[day]?.dinner || <span className="italic text-gray-400">No meal</span>}
+                  </p>
+                </div>
+              </div>
+            </div>
           ))}
         </div>
       )}
     </div>
   )
 }
-
-import { Fragment } from "react"

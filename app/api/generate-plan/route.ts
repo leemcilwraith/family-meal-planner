@@ -1,128 +1,95 @@
 import { NextResponse } from "next/server"
 import OpenAI from "openai"
-import { createClient } from "@supabase/supabase-js"
 
-export const dynamic = "force-dynamic"
-
-// Server-side Supabase client
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-)
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY!,
+})
 
 export async function POST(req: Request) {
   try {
-    const { householdId } = await req.json()
+    const { greenMeals, householdSettings } = await req.json()
 
-    if (!householdId) {
-      return NextResponse.json({ error: "Missing householdId" }, { status: 400 })
-    }
+    // ----------------------------
+    // 1. Build prompt
+    // ----------------------------
+    const prompt = `
+Generate a weekly meal plan for a household.
 
-    // -----------------------------------
-    // 1. LOAD SETTINGS
-    // -----------------------------------
-    const { data: settings } = await supabase
-      .from("household_settings")
-      .select("*")
-      .eq("household_id", householdId)
-      .single()
+Return ONLY valid JSON with this exact shape:
 
-    const riskLevel = settings?.risk_level ?? 5
-    const prepPref = settings?.prep_time_preference ?? "standard"
-    const kidsAppetite = settings?.kids_appetite ?? "medium"
+{
+  "Monday": { "lunch": "...", "dinner": "..." },
+  "Tuesday": { "lunch": "...", "dinner": "..." },
+  "Wednesday": { "lunch": "...", "dinner": "..." },
+  "Thursday": { "lunch": "...", "dinner": "..." },
+  "Friday": { "lunch": "...", "dinner": "..." },
+  "Saturday": { "lunch": "...", "dinner": "..." },
+  "Sunday": { "lunch": "...", "dinner": "..." }
+}
 
-    // -----------------------------------
-    // 2. LOAD MEALS + RATINGS
-    // -----------------------------------
-    const { data: ratings } = await supabase
-      .from("household_meals")
-      .select("rating, meals(id, name, type)")
-      .eq("household_id", householdId)
+Green meals (preferred): ${greenMeals.join(", ")}
 
-    // Normalize meals: Supabase sometimes types nested selects as arrays
-      const normalisedRatings = ratings?.map((r) => ({
-        rating: r.rating,
-        meals: Array.isArray(r.meals) ? r.meals[0] : r.meals,
-      })) ?? []
+Kids appetite: ${householdSettings.kids_appetite}
+Prep preference: ${householdSettings.prep_time_preference}
+Risk level: ${householdSettings.risk_level}
 
-      const greenMeals = normalisedRatings
-        .filter((r) => r.rating === "green" && r.meals?.type === "meal")
-        .map((r) => r.meals.name)
-
-    // -----------------------------------
-    // 3. INITIALISE OPENAI CLIENT
-    // -----------------------------------
-    const client = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY!,
-    })
-
-    // -----------------------------------
-    // 4. ASK AI TO BUILD A WEEKLY PLAN
-    // -----------------------------------
-    const systemPrompt = `
-You are designing a child-friendly weekly meal plan.
-
-Return ONLY valid JSON.
-DO NOT include code fences like \`\`\`json or \`\`\`.
-DO NOT include commentary.
-The response must be valid for JSON.parse().
-
-Rules:
-- Include Monday → Sunday.
-- Each day has lunch + dinner.
-- Use child-friendly meals.
-- Prefer green meals.
-- Risk tolerance: ${riskLevel}.
-- Prep-time preference: ${prepPref}.
-- Kids appetite: ${kidsAppetite}.
+Do NOT include code blocks.
 `
 
-    const userPrompt = `
-Green meals:
-${greenMeals.join(", ") || "None"}
-
-Generate a weekly plan.
-`
-
-    const response = await client.responses.create({
-      model: "gpt-4o-mini",
-      input: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      max_output_tokens: 500,
+    // ----------------------------
+    // 2. Call OpenAI
+    // ----------------------------
+    const completion = await openai.responses.create({
+      model: "gpt-4.1",
+      input: prompt,
+      max_output_tokens: 600,
     })
 
-    let raw = response.output_text.trim()
-    console.log("RAW AI OUTPUT:", raw)
+    let raw = completion.output_text.trim()
 
-    // -----------------------------------
-    // REMOVE ```json AND ``` FROM OUTPUT
-    // -----------------------------------
-    raw = raw.replace(/```json/gi, "")
-    raw = raw.replace(/```/g, "")
-    raw = raw.trim()
+    // Remove accidental markdown fences if any
+    raw = raw.replace(/```json/g, "").replace(/```/g, "").trim()
 
-    if (raw.startsWith("json")) {
-      raw = raw.slice(4).trim()
-    }
+    let parsed: any
 
-    // -----------------------------------
-    // PARSE JSON SAFELY
-    // -----------------------------------
-    let plan
     try {
-      plan = JSON.parse(raw)
-    } catch (e) {
-      console.error("JSON PARSE ERROR. RAW OUTPUT:", raw)
-      throw e
+      parsed = JSON.parse(raw)
+    } catch (err) {
+      console.error("❌ Failed to parse JSON:", raw)
+      throw new Error("Invalid AI JSON output")
     }
 
-    return NextResponse.json({ plan })
-  } catch (err) {
-    console.error("AI GENERATION ERROR:", err)
+    // ----------------------------
+    // 3. Normalize output
+    // ----------------------------
+    const normalized =
+      parsed.mealPlan ??  // if the model used "mealPlan"
+      parsed.plan ??      // if the model used "plan"
+      parsed              // fallback if correct structure
+
+    // Validate the expected structure
+    const days = [
+      "Monday",
+      "Tuesday",
+      "Wednesday",
+      "Thursday",
+      "Friday",
+      "Saturday",
+      "Sunday",
+    ]
+
+    for (const day of days) {
+      if (!normalized[day]) normalized[day] = { lunch: "", dinner: "" }
+    }
+
+    // ----------------------------
+    // 4. Return final JSON
+    // ----------------------------
+    return NextResponse.json({ plan: normalized })
+  } catch (error) {
+    console.error("AI GENERATION ERROR:", error)
     return NextResponse.json(
-      { error: "Failed to generate plan", details: String(err) },
+      { error: "Failed to generate plan" },
       { status: 500 }
     )
   }
