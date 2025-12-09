@@ -1,47 +1,52 @@
 import { NextResponse } from "next/server"
+import { supabase } from "@/lib/supabaseClient"
 import OpenAI from "openai"
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
 })
 
-const DAYS = [
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday",
-  "Sunday",
-]
+const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 export async function POST(req: Request) {
   try {
-    const {
-      dayConfig,
-      greenMeals,
-      householdSettings,
-    } = await req.json()
+    const { householdId, selectedDays } = await req.json()
 
-    /*
-      dayConfig example:
+    if (!householdId || !selectedDays) {
+      return NextResponse.json({ error: "Missing householdId or selectedDays" }, { status: 400 })
+    }
 
-      {
-        "Monday":    { lunch: true,  dinner: false },
-        "Tuesday":   { lunch: false, dinner: true },
-        "Wednesday": { lunch: true,  dinner: true },
-        ...
-      }
-    */
+    // Load meal ratings + meals
+    const { data: ratings } = await supabase
+      .from("household_meals")
+      .select(
+        `
+        meal_id,
+        rating,
+        meals ( id, name, type )
+      `
+      )
+      .eq("household_id", householdId)
 
-    // ---------------------------------------------------------
-    // Build dynamic JSON example for prompt
-    // ---------------------------------------------------------
+    const greenMeals =
+      ratings
+        ?.filter((r) => r.rating === "green" && r.meals?.type === "meal")
+        .map((r) => r.meals.name) ?? []
+
+    // -----------------------------------
+    // Transform selectedDays to a simple structure
+    // Example:  { Monday: { lunch: true, dinner: false } }
+    // -----------------------------------
+    const dayConfig: Record<string, { lunch: boolean; dinner: boolean }> = selectedDays
+
+    // -----------------------------------
+    // Build example JSON for model
+    // -----------------------------------
     function buildExample() {
-      let obj = {}
+      let obj: Record<string, { lunch: string; dinner: string }> = {}
 
       for (const day of DAYS) {
-        const cfg = dayConfig[day]
+        const cfg = dayConfig[day] || { lunch: false, dinner: false }
         obj[day] = {
           lunch: cfg.lunch ? "..." : "",
           dinner: cfg.dinner ? "..." : "",
@@ -53,84 +58,59 @@ export async function POST(req: Request) {
 
     const exampleJson = buildExample()
 
-    // ---------------------------------------------------------
-    // Build AI Prompt
-    // ---------------------------------------------------------
+    // -----------------------------------
+    // Build the prompt
+    // -----------------------------------
     const prompt = `
-Generate a weekly family meal plan.
-
-Return ONLY valid JSON. No backticks. No extra text.
-
-Follow this exact shape:
-
-${exampleJson}
+You are generating a weekly meal plan for a family.
 
 Rules:
-- Only generate meals in fields that are non-empty in the example above.
-- If a meal (lunch/dinner) is marked "" in the example, ALWAYS return "".
-- If a day has both meals marked "", return both as "" (do not invent meals).
-- Use kid-friendly meals.
-- Prefer these meals/foods: ${greenMeals.join(", ")}
-- Kids appetite: ${householdSettings.kids_appetite}
-- Prep preference: ${householdSettings.prep_time_preference}
-- Risk level: ${householdSettings.risk_level}
+- Use ONLY meals from this green list: ${greenMeals.join(", ") || "none"}.
+- If a day/meal slot is disabled, return an empty string "".
+- Respond ONLY with valid JSON. No code blocks.
 
-IMPORTANT:
-- The output MUST strictly follow the JSON example's shape.
-- DAYS MUST be in this order: ${DAYS.join(", ")}
-- If unsure, keep meals simple.
+The JSON MUST match this exact structure:
+\`\`\`
+${exampleJson}
+\`\`\`
+
+Now generate the plan:
 `
 
-    // ---------------------------------------------------------
+    // -----------------------------------
     // Call OpenAI
-    // ---------------------------------------------------------
-    const completion = await openai.responses.create({
-      model: "gpt-4.1",
-      input: prompt,
-      max_output_tokens: 600,
+    // -----------------------------------
+    const response = await openai.chat.completions.create({
+      model: "gpt-4.1-mini",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.7,
     })
 
-    let raw = completion.output_text.trim()
-    raw = raw.replace(/```json/g, "")
-             .replace(/```/g, "")
-             .trim()
+    let raw = response.choices?.[0]?.message?.content?.trim() ?? ""
 
-    let parsed: any
-    try {
-      parsed = JSON.parse(raw)
-    } catch (err) {
-      console.error("❌ JSON PARSE ERROR — RAW OUTPUT:", raw)
-      return NextResponse.json(
-        { error: "AI returned invalid JSON" },
-        { status: 500 }
-      )
+    // Strip ```json fences if present
+    if (raw.startsWith("```")) {
+      raw = raw.replace(/```json|```/g, "").trim()
     }
 
-    // ---------------------------------------------------------
-    // Normalize output to guarantee UI safety
-    // ---------------------------------------------------------
-    const normalized: Record<string, { lunch: string; dinner: string }> = {}
+    // Parse JSON
+    const parsed = JSON.parse(raw)
 
-    for (const day of DAYS) {
-      const cfg = dayConfig[day]
-      const aiDay = parsed[day] ?? {}
+    // -----------------------------------
+    // Save plan to DB
+    // -----------------------------------
+    const weekStart = new Date()
+    weekStart.setHours(0, 0, 0, 0)
 
-      normalized[day] = {
-        lunch: cfg.lunch ? aiDay.lunch || "" : "",
-        dinner: cfg.dinner ? aiDay.dinner || "" : "",
-      }
-    }
+    await supabase.from("weekly_plans").insert({
+      household_id: householdId,
+      week_start: weekStart,
+      plan_json: parsed,
+    })
 
-    // ---------------------------------------------------------
-    // Return final plan
-    // ---------------------------------------------------------
-    return NextResponse.json({ plan: normalized })
-
-  } catch (error) {
-    console.error("AI ROUTE ERROR:", error)
-    return NextResponse.json(
-      { error: "Failed to generate plan" },
-      { status: 500 }
-    )
+    return NextResponse.json({ plan: parsed })
+  } catch (err: any) {
+    console.error("AI GENERATION ERROR:", err)
+    return NextResponse.json({ error: err.message }, { status: 500 })
   }
 }
