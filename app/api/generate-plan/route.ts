@@ -9,10 +9,11 @@ const client = new OpenAI({
 // ----------------------
 // Type definitions
 // ----------------------
+
 type MealRecord = {
   id: string
   name: string
-  type: "meal" | "food" | string
+  type: string
 }
 
 type HouseholdMealRow = {
@@ -33,6 +34,7 @@ type GeneratePlanBody = {
 // ----------------------
 // API Route
 // ----------------------
+
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as GeneratePlanBody
@@ -45,12 +47,13 @@ export async function POST(req: Request) {
     // ------------------------------
     // Fetch household meal ratings
     // ------------------------------
-    const { data: ratings, error: ratingsError } = await supabase
+    const { data: rawRatings, error: ratingsError } = await supabase
       .from("household_meals")
       .select(`
         rating,
         meals ( id, name, type )
       `)
+      .eq("household_id", householdId)
 
     if (ratingsError) {
       console.error("Supabase rating error:", ratingsError)
@@ -60,15 +63,29 @@ export async function POST(req: Request) {
       )
     }
 
-    const typedRatings = (ratings ?? []) as HouseholdMealRow[]
+    // rawRatings.meals may be an array → convert
+    const ratings: HouseholdMealRow[] = (rawRatings ?? []).map((row: any) => {
+      let meal: MealRecord | null = null
 
-    // Only green meals + only MEALS (not foods)
+      // meals may be null OR an array OR an object
+      if (Array.isArray(row.meals) && row.meals.length > 0) {
+        meal = row.meals[0] // take the first related meal
+      } else if (row.meals && typeof row.meals === "object") {
+        meal = row.meals
+      }
+
+      return {
+        rating: row.rating,
+        meals: meal,
+      }
+    })
+
+    // Filter only green MEALS (not foods)
     const greenMeals =
-      typedRatings
+      ratings
         .filter((r) => r.rating === "green" && r.meals?.type === "meal")
         .map((r) => r.meals!.name) ?? []
 
-    // If no green meals exist, AI cannot build anything
     if (greenMeals.length === 0) {
       return NextResponse.json(
         { error: "No green meals exist for this household." },
@@ -77,8 +94,9 @@ export async function POST(req: Request) {
     }
 
     // ------------------------------
-    // Build selected-days object
+    // Validate selected days
     // ------------------------------
+
     const requestedRows: string[] = []
     for (const day in selectedDays) {
       const opts = selectedDays[day]
@@ -87,7 +105,6 @@ export async function POST(req: Request) {
       }
     }
 
-    // Edge case
     if (requestedRows.length === 0) {
       return NextResponse.json(
         { error: "No days or meals selected" },
@@ -99,81 +116,65 @@ export async function POST(req: Request) {
     // Build AI prompt
     // ------------------------------
     const aiPrompt = `
-You are generating a weekly meal plan.
+Generate a meal plan using ONLY the following green meals:
 
-Only choose meals from this GREEN LIST:
 ${greenMeals.map((m) => `- ${m}`).join("\n")}
 
-User has selected these meals to generate:
+The user has selected these days and meals:
+
 ${requestedRows
   .map(
     (day) =>
-      `${day}: lunch = ${selectedDays[day].lunch}, dinner = ${
-        selectedDays[day].dinner
-      }`
+      `${day}: lunch=${selectedDays[day].lunch}, dinner=${selectedDays[day].dinner}`
   )
   .join("\n")}
 
-Return ONLY a JSON object in the following format, and nothing else:
+Return ONLY valid JSON in this format:
 
 {
   "plan": {
     "Monday": { "lunch": "", "dinner": "" },
-    "Tuesday": { "lunch": "", "dinner": "" },
-    ...
+    "Tuesday": { "lunch": "", "dinner": "" }
   }
 }
 
-If a meal was not selected (lunch/dinner = false), return an empty string for it.
+Return empty string for any meal they did not select.
 `
 
-    // ------------------------------
-    // OpenAI call
-    // ------------------------------
     const response = await client.responses.create({
       model: "gpt-4.1",
       reasoning: { effort: "medium" },
       input: aiPrompt,
     })
 
-    const raw = response.output_text?.trim()
+    let raw = response.output_text?.trim() ?? ""
 
-    if (!raw) {
-      return NextResponse.json(
-        { error: "AI returned no text" },
-        { status: 500 }
-      )
-    }
-
-    // Remove code fences if present
-    const cleaned = raw
+    raw = raw
       .replace(/^```json/i, "")
       .replace(/^```/, "")
       .replace(/```$/, "")
       .trim()
 
-    let aiJson: any = null
+    let parsed: any
     try {
-      aiJson = JSON.parse(cleaned)
+      parsed = JSON.parse(raw)
     } catch (err) {
-      console.error("BAD JSON FROM AI:", cleaned)
+      console.error("Invalid AI JSON:", raw)
       return NextResponse.json(
-        { error: "Invalid JSON from AI" },
+        { error: "AI returned invalid JSON", raw },
         { status: 500 }
       )
     }
 
-    const plan = aiJson.plan
+    const plan = parsed.plan
     if (!plan) {
       return NextResponse.json(
-        { error: "AI did not return a valid plan" },
+        { error: "Missing plan in AI response", parsed },
         { status: 500 }
       )
     }
 
-    // ------------------------------
-    // Save generated plan
-    // ------------------------------
+    // Save to DB
     const { error: saveErr } = await supabase.from("weekly_plans").insert({
       household_id: householdId,
       week_start: new Date().toISOString().slice(0, 10),
@@ -182,16 +183,12 @@ If a meal was not selected (lunch/dinner = false), return an empty string for it
 
     if (saveErr) {
       console.error("Failed to save plan:", saveErr)
-      return NextResponse.json(
-        { error: "Could not save plan to database" },
-        { status: 500 }
-      )
+      return NextResponse.json({ error: "Could not save" }, { status: 500 })
     }
 
-    // Return the generated plan
     return NextResponse.json({ plan })
   } catch (err) {
-    console.error("UNEXPECTED ERROR:", err)
+    console.error("Unexpected error:", err)
     return NextResponse.json(
       { error: "Unexpected server error" },
       { status: 500 }
