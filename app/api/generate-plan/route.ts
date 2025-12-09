@@ -39,10 +39,15 @@ export async function POST(req: Request) {
       .select("rating, meals(id, name, type)")
       .eq("household_id", householdId)
 
-    const greenMeals =
-      ratings
-        ?.filter((r) => r.rating === "green" && r.meals?.type === "meal")
-        .map((r) => r.meals.name) ?? []
+    // Normalize meals: Supabase sometimes types nested selects as arrays
+      const normalisedRatings = ratings?.map((r) => ({
+        rating: r.rating,
+        meals: Array.isArray(r.meals) ? r.meals[0] : r.meals,
+      })) ?? []
+
+      const greenMeals = normalisedRatings
+        .filter((r) => r.rating === "green" && r.meals?.type === "meal")
+        .map((r) => r.meals.name)
 
     // -----------------------------------
     // 3. INITIALISE OPENAI CLIENT
