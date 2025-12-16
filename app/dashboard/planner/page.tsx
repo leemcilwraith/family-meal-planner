@@ -16,15 +16,26 @@ const DAYS = [
   "Sunday",
 ]
 
+/* ---------------------------------------
+   TYPES
+----------------------------------------*/
 type DayConfig = {
   lunch: boolean
   dinner: boolean
 }
 
-type DayConfigMap = {
-  [day: string]: DayConfig
+type DayConfigMap = Record<string, DayConfig>
+
+type MealSlot = {
+  lunch?: string
+  dinner?: string
 }
 
+type WeeklyPlan = Record<string, MealSlot>
+
+/* ---------------------------------------
+   COMPONENT
+----------------------------------------*/
 export default function PlannerPage() {
   const [householdId, setHouseholdId] = useState<string | null>(null)
   const [loadingHousehold, setLoadingHousehold] = useState(true)
@@ -35,17 +46,18 @@ export default function PlannerPage() {
     )
   )
 
-  const [plan, setPlan] = useState<Record<string, DayConfig & { lunch: string; dinner: string }> | null>(null)
+  const [plan, setPlan] = useState<WeeklyPlan | null>(null)
   const [loadingPlan, setLoadingPlan] = useState(false)
   const [error, setError] = useState("")
 
-  // --------------------------------------------------
-  // Load householdId ONCE
-  // --------------------------------------------------
+  /* ---------------------------------------
+     Load householdId ONCE
+  ----------------------------------------*/
   useEffect(() => {
     async function loadHousehold() {
       const { data: sessionData } = await supabase.auth.getSession()
       const user = sessionData.session?.user
+
       if (!user) {
         setLoadingHousehold(false)
         return
@@ -67,9 +79,9 @@ export default function PlannerPage() {
     loadHousehold()
   }, [])
 
-  // --------------------------------------------------
-  // Toggle handlers
-  // --------------------------------------------------
+  /* ---------------------------------------
+     Toggle handlers
+  ----------------------------------------*/
   function toggleMeal(day: string, meal: "lunch" | "dinner") {
     setDayConfig((prev) => ({
       ...prev,
@@ -96,9 +108,9 @@ export default function PlannerPage() {
     )
   }
 
-  // --------------------------------------------------
-  // Generate Plan
-  // --------------------------------------------------
+  /* ---------------------------------------
+     Generate Plan
+  ----------------------------------------*/
   async function generatePlan() {
     if (!householdId) {
       setError("Household not ready yet. Please try again.")
@@ -136,17 +148,17 @@ export default function PlannerPage() {
         return
       }
 
-      setPlan(data.plan)
-    } catch (err) {
+      setPlan(data.plan as WeeklyPlan)
+    } catch {
       setError("Network error while generating plan")
     }
 
     setLoadingPlan(false)
   }
 
-  // --------------------------------------------------
-  // UI
-  // --------------------------------------------------
+  /* ---------------------------------------
+     UI
+  ----------------------------------------*/
   if (loadingHousehold) {
     return <p className="p-10">Loading planner…</p>
   }
@@ -164,9 +176,7 @@ export default function PlannerPage() {
     <div className="max-w-5xl mx-auto space-y-10 p-6">
       <h1 className="text-4xl font-semibold">Weekly Meal Planner</h1>
 
-      {/* ---------------------------------- */}
       {/* Day / Meal Matrix */}
-      {/* ---------------------------------- */}
       <div className="border rounded-lg p-6 space-y-4 bg-white shadow">
         <h2 className="text-2xl font-semibold">Select meals to generate</h2>
 
@@ -208,16 +218,17 @@ export default function PlannerPage() {
         </div>
       </div>
 
-      {/* Generate Button */}
-      <Button onClick={generatePlan} disabled={loadingPlan} className="text-lg py-6">
+      <Button
+        onClick={generatePlan}
+        disabled={loadingPlan}
+        className="text-lg py-6"
+      >
         {loadingPlan ? "Generating…" : "Generate Plan"}
       </Button>
 
       {error && <p className="text-red-500 font-medium">{error}</p>}
 
-      {/* ---------------------------------- */}
       {/* Render Plan */}
-      {/* ---------------------------------- */}
       {plan && (
         <div className="space-y-6">
           {DAYS.map((day) => {
@@ -235,6 +246,7 @@ export default function PlannerPage() {
                       <p>{plan[day]?.lunch || "—"}</p>
                     </div>
                   )}
+
                   {cfg.dinner && (
                     <div>
                       <p className="font-semibold">Dinner</p>
