@@ -18,18 +18,27 @@ type JoinedMeal =
       type: string
     }[]
 
+type MealSlot = {
+  lunch?: string
+  dinner?: string
+}
+
+type WeeklyPlan = Record<string, MealSlot>
+
 export async function POST(req: Request) {
   try {
     const body = await req.json()
-    const { householdId, daysConfig } = body
+    const { householdId, selectedDays } = body
 
     if (!householdId) {
-      console.error("❌ Missing householdId")
-      return NextResponse.json({ error: "Missing householdId" }, { status: 400 })
+      return NextResponse.json(
+        { error: "Missing householdId" },
+        { status: 400 }
+      )
     }
 
     /* -------------------------------------------------
-       1. Fetch household meals WITH joined meal records
+       1. Fetch GREEN meals for household
     ---------------------------------------------------*/
     const { data: rows, error } = await supabaseServer
       .from("household_meals")
@@ -46,80 +55,74 @@ export async function POST(req: Request) {
       .eq("household_id", householdId)
 
     if (error) {
-      console.error("❌ Supabase query error:", error)
+      console.error("Supabase error:", error)
       return NextResponse.json({ error: "DB query failed" }, { status: 500 })
     }
 
-    console.log("🔎 RAW household_meals rows:", JSON.stringify(rows, null, 2))
-
     if (!rows || rows.length === 0) {
-      console.error("❌ No household_meals rows found")
       return NextResponse.json(
         { error: "No meals linked to household" },
         { status: 400 }
       )
     }
 
-    /* -------------------------------------------------
-       2. Extract GREEN MEALS safely
-    ---------------------------------------------------*/
     const greenMeals: string[] = []
 
     for (const row of rows as { rating: string; meals: JoinedMeal | null }[]) {
       if (row.rating !== "green" || !row.meals) continue
 
       const meal = Array.isArray(row.meals) ? row.meals[0] : row.meals
-
-      if (!meal) continue
-      if (meal.type !== "meal") continue
+      if (!meal || meal.type !== "meal") continue
 
       greenMeals.push(meal.name)
     }
 
-    console.log("✅ GREEN MEALS FOUND:", greenMeals)
-
     if (greenMeals.length === 0) {
-      console.error("❌ Green meals array empty AFTER processing")
       return NextResponse.json(
-        {
-          error: "No green meals exist for this household",
-          debug: rows,
-        },
+        { error: "No green meals exist for this household" },
         { status: 400 }
       )
     }
 
     /* -------------------------------------------------
-       3. Build plan skeleton from selected days/meals
+       2. Build PLAN SKELETON (source of truth)
     ---------------------------------------------------*/
-    const plan: Record<string, { lunch?: string; dinner?: string }> = {}
+    const skeleton: WeeklyPlan = {}
 
-    for (const day of Object.keys(daysConfig || {})) {
-      plan[day] = {}
-      if (daysConfig[day].lunch) plan[day].lunch = ""
-      if (daysConfig[day].dinner) plan[day].dinner = ""
+    for (const day of Object.keys(selectedDays || {})) {
+      const cfg = selectedDays[day]
+      skeleton[day] = {}
+
+      if (cfg.lunch) skeleton[day].lunch = ""
+      if (cfg.dinner) skeleton[day].dinner = ""
     }
 
+    console.log("🧱 PLAN SKELETON:", skeleton)
+
     /* -------------------------------------------------
-       4. Ask OpenAI to fill the plan
+       3. Ask OpenAI to fill skeleton ONLY
     ---------------------------------------------------*/
     const prompt = `
 You are a family meal planner.
 
-Only choose meals from this list:
+RULES (follow strictly):
+- Use ONLY meals from the allowed list
+- Fill EVERY empty string
+- Do NOT add or remove days
+- Do NOT add extra meals
+- Return VALID JSON ONLY
+- No markdown, no commentary
+
+Allowed meals:
 ${greenMeals.map((m) => `- ${m}`).join("\n")}
 
-Fill in the following meal plan using ONLY meals from the list above.
+Here is the plan skeleton to fill:
+${JSON.stringify(skeleton, null, 2)}
 
-Return VALID JSON ONLY in this exact format:
+Return JSON in this exact format:
 {
-  "mealPlan": {
-    "Monday": { "lunch": "...", "dinner": "..." }
-  }
+  "mealPlan": { ...same structure as provided }
 }
-
-Here is the plan skeleton:
-${JSON.stringify(plan, null, 2)}
 `
 
     const completion = await openai.chat.completions.create({
@@ -134,8 +137,29 @@ ${JSON.stringify(plan, null, 2)}
     console.log("🧠 RAW AI OUTPUT:", raw)
 
     const parsed = JSON.parse(raw)
+    const aiPlan: WeeklyPlan = parsed.mealPlan || {}
 
-    return NextResponse.json({ plan: parsed.mealPlan })
+    /* -------------------------------------------------
+       4. DEFENSIVE MERGE (guarantees full output)
+    ---------------------------------------------------*/
+    const finalPlan: WeeklyPlan = {}
+
+    for (const day of Object.keys(skeleton)) {
+      finalPlan[day] = {
+        lunch:
+          skeleton[day].lunch !== undefined
+            ? aiPlan[day]?.lunch || "TBD"
+            : undefined,
+        dinner:
+          skeleton[day].dinner !== undefined
+            ? aiPlan[day]?.dinner || "TBD"
+            : undefined,
+      }
+    }
+
+    console.log("✅ FINAL PLAN:", finalPlan)
+
+    return NextResponse.json({ plan: finalPlan })
   } catch (err: any) {
     console.error("🔥 AI GENERATION ERROR:", err)
     return NextResponse.json(
