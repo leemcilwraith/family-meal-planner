@@ -1,32 +1,71 @@
 "use client"
 
-import { supabase } from "@/lib/supabaseClient"
 import { useEffect, useState } from "react"
+import { useRouter } from "next/navigation"
+import { supabase } from "@/lib/supabaseClient"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
-export default function Dashboard() {
-  const [user, setUser] = useState<any>(null)
+export default function DashboardPage() {
+  const router = useRouter()
+
+  const [email, setEmail] = useState<string | null>(null)
+  const [householdId, setHouseholdId] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     async function load() {
-      const { data } = await supabase.auth.getSession()
-      setUser(data.session?.user ?? null)
+      const { data: sessionData } = await supabase.auth.getSession()
+      const user = sessionData.session?.user
+
+      if (!user) {
+        router.push("/login")
+        return
+      }
+
+      setEmail(user.email ?? null)
+
+      const { data: link, error } = await supabase
+        .from("user_households")
+        .select("household_id")
+        .eq("user_id", user.id)
+        .maybeSingle()
+
+      if (error || !link?.household_id) {
+        console.error("Failed to load household", error)
+        return
+      }
+
+      setHouseholdId(link.household_id)
+      setLoading(false)
     }
+
     load()
-  }, [])
+  }, [router])
+
+  if (loading) {
+    return <div className="p-10 text-gray-500">Loading dashboard…</div>
+  }
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-4xl font-bold">Dashboard</h1>
+    <div className="p-8 space-y-6">
+      <h1 className="text-3xl font-semibold">Dashboard</h1>
 
-      {user && (
-        <p className="text-gray-600">
-          You are logged in as: <strong>{user.email}</strong>
-        </p>
-      )}
+      <Card>
+        <CardHeader>
+          <CardTitle>Your account</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <div>
+            <strong>Email:</strong> {email}
+          </div>
 
-      <p className="text-gray-700">
-        Use the sidebar to manage meals, set preferences, or generate a weekly plan.
-      </p>
+          {householdId && (
+            <div className="text-xs text-gray-400 break-all">
+              Household ID: {householdId}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   )
 }
