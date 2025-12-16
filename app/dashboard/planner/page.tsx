@@ -31,6 +31,11 @@ type MealSlot = {
   dinner?: string
 }
 
+type FavouriteMeal = {
+  id: string
+  name: string
+}
+
 type WeeklyPlan = Record<string, MealSlot>
 
 /* ---------------------------------------
@@ -39,6 +44,28 @@ type WeeklyPlan = Record<string, MealSlot>
 export default function PlannerPage() {
   const [householdId, setHouseholdId] = useState<string | null>(null)
   const [loadingHousehold, setLoadingHousehold] = useState(true)
+  const [favourites, setFavourites] = useState<FavouriteMeal[]>([])
+
+  function swapMeal(
+  day: string,
+  mealType: "lunch" | "dinner",
+  newMeal: string
+) {
+  if (!plan) return
+
+  setPlan((prev) => {
+    if (!prev) return prev
+
+    return {
+      ...prev,
+      [day]: {
+        ...prev[day],
+        [mealType]: newMeal,
+      },
+    }
+  })
+}
+
 
   const [dayConfig, setDayConfig] = useState<DayConfigMap>(() =>
     Object.fromEntries(
@@ -72,6 +99,24 @@ export default function PlannerPage() {
       if (link?.household_id) {
         setHouseholdId(link.household_id)
       }
+
+      const { data: favRows, error: favError } = await supabase
+  .from("household_meals")
+  .select("meals(id, name)")
+  .eq("household_id", link.household_id)
+  .eq("is_favourite", true)
+  .eq("meals.type", "meal")
+
+if (favError) {
+  console.error("Failed to load favourites", favError)
+} else {
+  setFavourites(
+    (favRows ?? [])
+      .map((r: any) => r.meals)
+      .filter(Boolean)
+  )
+}
+
 
       setLoadingHousehold(false)
     }
@@ -243,14 +288,54 @@ export default function PlannerPage() {
                   {cfg.lunch && (
                     <div>
                       <p className="font-semibold">Lunch</p>
-                      <p>{plan[day]?.lunch || "—"}</p>
+                      <div className="space-y-1">
+  <p>{plan[day]?.lunch || "—"}</p>
+
+  {favourites.length > 0 && (
+    <select
+      className="text-sm border rounded px-2 py-1"
+      onChange={(e) =>
+        swapMeal(day, "lunch", e.target.value)
+      }
+      defaultValue=""
+    >
+      <option value="">Swap for favourite…</option>
+      {favourites.map((m) => (
+        <option key={m.id} value={m.name}>
+          {m.name}
+        </option>
+      ))}
+    </select>
+  )}
+</div>
+
                     </div>
                   )}
 
                   {cfg.dinner && (
                     <div>
                       <p className="font-semibold">Dinner</p>
-                      <p>{plan[day]?.dinner || "—"}</p>
+                      <div className="space-y-1">
+  <p>{plan[day]?.dinner || "—"}</p>
+
+  {favourites.length > 0 && (
+    <select
+      className="text-sm border rounded px-2 py-1"
+      onChange={(e) =>
+        swapMeal(day, "dinner", e.target.value)
+      }
+      defaultValue=""
+    >
+      <option value="">Swap for favourite…</option>
+      {favourites.map((m) => (
+        <option key={m.id} value={m.name}>
+          {m.name}
+        </option>
+      ))}
+    </select>
+  )}
+</div>
+
                     </div>
                   )}
                 </div>

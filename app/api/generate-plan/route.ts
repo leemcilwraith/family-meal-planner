@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import OpenAI from "openai"
 import { supabaseServer } from "@/lib/supabaseServer"
+import { fullPlanPrompt, slotPrompt } from "@/lib/aiPrompts"
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
@@ -28,7 +29,15 @@ type WeeklyPlan = Record<string, MealSlot>
 export async function POST(req: Request) {
   try {
     const body = await req.json()
-    const { householdId, selectedDays } = body
+
+    const {
+      householdId,
+      selectedDays,
+      mode = "full", // "full" | "slot"
+      day,
+      mealType,
+      existingMeal,
+    } = body
 
     if (!householdId) {
       return NextResponse.json(
@@ -55,7 +64,7 @@ export async function POST(req: Request) {
       .eq("household_id", householdId)
 
     if (error) {
-      console.error("Supabase error:", error)
+      console.error("❌ Supabase error:", error)
       return NextResponse.json({ error: "DB query failed" }, { status: 500 })
     }
 
@@ -84,8 +93,62 @@ export async function POST(req: Request) {
       )
     }
 
+    /* =================================================
+       SLOT MODE — C3 (single-meal reshuffle)
+    ===================================================*/
+    if (mode === "slot") {
+      if (!day || !mealType || !existingMeal) {
+        return NextResponse.json(
+          { error: "Missing slot data" },
+          { status: 400 }
+        )
+      }
+
+      const prompt = `
+You are a family meal planner.
+
+Choose ONE meal from the allowed list.
+Do NOT repeat this meal:
+"${existingMeal}"
+
+Rules:
+- Choose ONLY from the list
+- Return JSON only
+- No commentary
+
+Allowed meals:
+${greenMeals.map((m) => `- ${m}`).join("\n")}
+
+Return exactly:
+{ "meal": "Meal Name" }
+`
+
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.7,
+      })
+
+      let raw = completion.choices[0].message.content || ""
+      raw = raw.replace(/```json|```/g, "").trim()
+
+      console.log("🔄 SLOT AI OUTPUT:", raw)
+
+      const parsed = JSON.parse(raw)
+
+      return NextResponse.json({
+        day,
+        mealType,
+        meal: parsed.meal,
+      })
+    }
+
+    /* =================================================
+       FULL WEEK MODE (existing behaviour)
+    ===================================================*/
+
     /* -------------------------------------------------
-       2. Build PLAN SKELETON (source of truth)
+       2. Build PLAN SKELETON
     ---------------------------------------------------*/
     const skeleton: WeeklyPlan = {}
 
@@ -102,28 +165,7 @@ export async function POST(req: Request) {
     /* -------------------------------------------------
        3. Ask OpenAI to fill skeleton ONLY
     ---------------------------------------------------*/
-    const prompt = `
-You are a family meal planner.
-
-RULES (follow strictly):
-- Use ONLY meals from the allowed list
-- Fill EVERY empty string
-- Do NOT add or remove days
-- Do NOT add extra meals
-- Return VALID JSON ONLY
-- No markdown, no commentary
-
-Allowed meals:
-${greenMeals.map((m) => `- ${m}`).join("\n")}
-
-Here is the plan skeleton to fill:
-${JSON.stringify(skeleton, null, 2)}
-
-Return JSON in this exact format:
-{
-  "mealPlan": { ...same structure as provided }
-}
-`
+    const prompt = slotPrompt(greenMeals, existingMeal)
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -140,7 +182,7 @@ Return JSON in this exact format:
     const aiPlan: WeeklyPlan = parsed.mealPlan || {}
 
     /* -------------------------------------------------
-       4. DEFENSIVE MERGE (guarantees full output)
+       4. DEFENSIVE MERGE
     ---------------------------------------------------*/
     const finalPlan: WeeklyPlan = {}
 

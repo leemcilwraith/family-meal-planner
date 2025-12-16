@@ -14,22 +14,23 @@ import {
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 
 // -------------------------------------------------------------------
-// TYPES — clean separation to avoid future Vercel/TS issues
+// TYPES
 // -------------------------------------------------------------------
 
 type MealRecord = {
   id: string
   name: string
   type: "meal" | "food"
-  created_by?: string | null
 }
 
 type MealWithRating = MealRecord & {
   rating: string
+  is_favourite: boolean
 }
 
 type HouseholdMealRow = {
   rating: string
+  is_favourite: boolean
   meals: MealRecord | null
 }
 
@@ -50,7 +51,6 @@ export default function MealsPage() {
       const user = sessionData.session?.user
       if (!user) return
 
-      // Get household
       const { data: link } = await supabase
         .from("user_households")
         .select("household_id")
@@ -60,25 +60,26 @@ export default function MealsPage() {
       if (!link?.household_id) return
       setHouseholdId(link.household_id)
 
-      // Get meals + ratings
       const { data, error } = await supabase
         .from("household_meals")
-        .select("rating, meals(*)") as unknown as {
+        .select("rating, is_favourite, meals(*)") as unknown as {
         data: HouseholdMealRow[] | null
         error: any
       }
 
-      if (error) console.error(error)
+      if (error) {
+        console.error(error)
+        return
+      }
+
       const rows = data ?? []
 
-      // -----------------------
-      // Build Meals & Foods lists
-      // -----------------------
       const mealList: MealWithRating[] = rows
         .filter((row) => row.meals?.type === "meal")
         .map((row) => ({
           ...(row.meals as MealRecord),
           rating: row.rating,
+          is_favourite: row.is_favourite,
         }))
 
       const foodList: MealWithRating[] = rows
@@ -86,6 +87,7 @@ export default function MealsPage() {
         .map((row) => ({
           ...(row.meals as MealRecord),
           rating: row.rating,
+          is_favourite: row.is_favourite,
         }))
 
       setMeals(mealList)
@@ -120,9 +122,14 @@ export default function MealsPage() {
       household_id: householdId,
       meal_id: created.id,
       rating: "green",
+      is_favourite: false,
     })
 
-    const entry: MealWithRating = { ...created, rating: "green" }
+    const entry: MealWithRating = {
+      ...created,
+      rating: "green",
+      is_favourite: false,
+    }
 
     if (type === "meal") {
       setMeals((m) => [...m, entry])
@@ -150,6 +157,36 @@ export default function MealsPage() {
   }
 
   // -------------------------------------------------------------------
+  // TOGGLE FAVOURITE ⭐
+  // -------------------------------------------------------------------
+  async function toggleFavourite(mealId: string, current: boolean) {
+    if (!householdId) return
+
+    const { error } = await supabase
+      .from("household_meals")
+      .update({ is_favourite: !current })
+      .eq("household_id", householdId)
+      .eq("meal_id", mealId)
+
+    if (error) {
+      console.error("Failed to update favourite:", error)
+      return
+    }
+
+    setMeals((m) =>
+      m.map((x) =>
+        x.id === mealId ? { ...x, is_favourite: !current } : x
+      )
+    )
+
+    setFoods((f) =>
+      f.map((x) =>
+        x.id === mealId ? { ...x, is_favourite: !current } : x
+      )
+    )
+  }
+
+  // -------------------------------------------------------------------
   // DELETE ITEM
   // -------------------------------------------------------------------
   async function deleteItem(mealId: string) {
@@ -163,9 +200,60 @@ export default function MealsPage() {
   }
 
   // -------------------------------------------------------------------
-  // UI RENDER
+  // UI
   // -------------------------------------------------------------------
   if (loading) return <p>Loading…</p>
+
+  function renderList(items: MealWithRating[]) {
+    const favourites = items.filter((i) => i.is_favourite)
+    const others = items.filter((i) => !i.is_favourite)
+
+    return (
+      <div className="space-y-6">
+        {[...favourites, ...others].map((item) => (
+          <div
+            key={item.id}
+            className="flex items-center justify-between p-4 bg-white rounded shadow"
+          >
+            <div className="flex items-center gap-3">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => toggleFavourite(item.id, item.is_favourite)}
+              >
+                {item.is_favourite ? "⭐" : "☆"}
+              </Button>
+
+              <span className="font-medium">{item.name}</span>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <Select
+                value={item.rating}
+                onValueChange={(v) => updateRating(item.id, v)}
+              >
+                <SelectTrigger className="w-24">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="green">Green</SelectItem>
+                  <SelectItem value="neutral">Neutral</SelectItem>
+                  <SelectItem value="red">Red</SelectItem>
+                </SelectContent>
+              </Select>
+
+              <Button
+                variant="destructive"
+                onClick={() => deleteItem(item.id)}
+              >
+                Delete
+              </Button>
+            </div>
+          </div>
+        ))}
+      </div>
+    )
+  }
 
   return (
     <div>
@@ -177,7 +265,6 @@ export default function MealsPage() {
           <TabsTrigger value="foods">Foods</TabsTrigger>
         </TabsList>
 
-        {/* ---------------- Meals Tab ---------------- */}
         <TabsContent value="meals">
           <div className="space-y-6">
             <div className="flex gap-4">
@@ -189,35 +276,10 @@ export default function MealsPage() {
               <Button onClick={() => addItem("meal")}>Add</Button>
             </div>
 
-            {meals.map((item) => (
-              <div
-                key={item.id}
-                className="flex items-center justify-between p-4 bg-white rounded shadow"
-              >
-                <div className="font-medium">{item.name}</div>
-
-                <div className="flex items-center gap-4">
-                  <Select value={item.rating} onValueChange={(v) => updateRating(item.id, v)}>
-                    <SelectTrigger className="w-24">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="green">Green</SelectItem>
-                      <SelectItem value="neutral">Neutral</SelectItem>
-                      <SelectItem value="red">Red</SelectItem>
-                    </SelectContent>
-                  </Select>
-
-                  <Button variant="destructive" onClick={() => deleteItem(item.id)}>
-                    Delete
-                  </Button>
-                </div>
-              </div>
-            ))}
+            {renderList(meals)}
           </div>
         </TabsContent>
 
-        {/* ---------------- Foods Tab ---------------- */}
         <TabsContent value="foods">
           <div className="space-y-6">
             <div className="flex gap-4">
@@ -229,31 +291,7 @@ export default function MealsPage() {
               <Button onClick={() => addItem("food")}>Add</Button>
             </div>
 
-            {foods.map((item) => (
-              <div
-                key={item.id}
-                className="flex items-center justify-between p-4 bg-white rounded shadow"
-              >
-                <div className="font-medium">{item.name}</div>
-
-                <div className="flex items-center gap-4">
-                  <Select value={item.rating} onValueChange={(v) => updateRating(item.id, v)}>
-                    <SelectTrigger className="w-24">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="green">Green</SelectItem>
-                      <SelectItem value="neutral">Neutral</SelectItem>
-                      <SelectItem value="red">Red</SelectItem>
-                    </SelectContent>
-                  </Select>
-
-                  <Button variant="destructive" onClick={() => deleteItem(item.id)}>
-                    Delete
-                  </Button>
-                </div>
-              </div>
-            ))}
+            {renderList(foods)}
           </div>
         </TabsContent>
       </Tabs>
