@@ -26,6 +26,10 @@ type MealSlot = {
 
 type WeeklyPlan = Record<string, MealSlot>
 
+function normaliseDay(day: string) {
+  return day.charAt(0).toUpperCase() + day.slice(1).toLowerCase()
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json()
@@ -104,24 +108,7 @@ export async function POST(req: Request) {
         )
       }
 
-      const prompt = `
-You are a family meal planner.
-
-Choose ONE meal from the allowed list.
-Do NOT repeat this meal:
-"${existingMeal}"
-
-Rules:
-- Choose ONLY from the list
-- Return JSON only
-- No commentary
-
-Allowed meals:
-${greenMeals.map((m) => `- ${m}`).join("\n")}
-
-Return exactly:
-{ "meal": "Meal Name" }
-`
+      const prompt = slotPrompt(greenMeals, existingMeal)
 
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
@@ -144,16 +131,18 @@ Return exactly:
     }
 
     /* =================================================
-       FULL WEEK MODE (existing behaviour)
+       FULL WEEK MODE
     ===================================================*/
 
     /* -------------------------------------------------
-       2. Build PLAN SKELETON
+       2. Build PLAN SKELETON (source of truth)
     ---------------------------------------------------*/
     const skeleton: WeeklyPlan = {}
 
-    for (const day of Object.keys(selectedDays || {})) {
-      const cfg = selectedDays[day]
+    for (const rawDay of Object.keys(selectedDays || {})) {
+      const cfg = selectedDays[rawDay]
+      const day = normaliseDay(rawDay)
+
       skeleton[day] = {}
 
       if (cfg.lunch) skeleton[day].lunch = ""
@@ -165,7 +154,7 @@ Return exactly:
     /* -------------------------------------------------
        3. Ask OpenAI to fill skeleton ONLY
     ---------------------------------------------------*/
-    const prompt = slotPrompt(greenMeals, existingMeal)
+    const prompt = fullPlanPrompt(greenMeals, skeleton)
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -182,7 +171,7 @@ Return exactly:
     const aiPlan: WeeklyPlan = parsed.mealPlan || {}
 
     /* -------------------------------------------------
-       4. DEFENSIVE MERGE
+       4. DEFENSIVE MERGE (guarantees no blanks)
     ---------------------------------------------------*/
     const finalPlan: WeeklyPlan = {}
 
