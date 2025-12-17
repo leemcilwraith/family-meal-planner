@@ -91,19 +91,23 @@ export default function PlannerPage() {
       }
 
       const { data: link } = await supabase
-        .from("user_households")
-        .select("household_id")
-        .eq("user_id", user.id)
-        .maybeSingle()
+  .from("user_households")
+  .select("household_id")
+  .eq("user_id", user.id)
+  .maybeSingle()
 
-      if (link?.household_id) {
-        setHouseholdId(link.household_id)
-      }
+if (!link?.household_id) {
+  console.error("No household link found")
+  return
+}
 
-      const { data: favRows, error: favError } = await supabase
+const householdId = link.household_id
+setHouseholdId(householdId)
+
+const { data: favRows, error: favError } = await supabase
   .from("household_meals")
   .select("meals(id, name)")
-  .eq("household_id", link.household_id)
+  .eq("household_id", householdId)
   .eq("is_favourite", true)
   .eq("meals.type", "meal")
 
