@@ -159,20 +159,37 @@ export default function PlannerPage() {
     )
   }
 
-  async function savePlan(updated: WeeklyPlan) {
-    if (!householdId) return
+  function getWeekStart(date = new Date()) {
+  const d = new Date(date)
+  const day = d.getDay() // 0 = Sunday
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1) // Monday
+  d.setDate(diff)
+  d.setHours(0, 0, 0, 0)
+  return d.toISOString().slice(0, 10)
+}
 
-    await supabase.from("weekly_plans").upsert(
+async function savePlan(plan: WeeklyPlan) {
+  if (!householdId) return
+
+  const weekStart = getWeekStart()
+
+  const { error } = await supabase
+    .from("weekly_plans")
+    .upsert(
       {
         household_id: householdId,
-        week_start: getWeekStart(),
-        plan_json: updated,
+        week_start: weekStart,
+        plan_json: plan,
       },
       {
         onConflict: "household_id,week_start",
       }
     )
+
+  if (error) {
+    console.error("❌ Failed to save plan:", error)
   }
+}
 
   function swapMeal(day: Day, mealType: "lunch" | "dinner", newMeal: string) {
     if (!plan || !newMeal) return
