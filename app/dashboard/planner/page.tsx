@@ -4,10 +4,9 @@ import { useEffect, useState } from "react"
 import { supabase } from "@/lib/supabaseClient"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Label } from "@/components/ui/label"
 
 /* ---------------------------------------
-   CONSTANTS
+   CONSTANTS & TYPES
 ----------------------------------------*/
 const DAYS = [
   "Monday",
@@ -21,9 +20,6 @@ const DAYS = [
 
 type Day = (typeof DAYS)[number]
 
-/* ---------------------------------------
-   TYPES
-----------------------------------------*/
 type DayConfig = {
   lunch: boolean
   dinner: boolean
@@ -44,25 +40,37 @@ type FavouriteMeal = {
 }
 
 /* ---------------------------------------
+   HELPERS
+----------------------------------------*/
+function getWeekStart(date = new Date()) {
+  const d = new Date(date)
+  const day = d.getDay() || 7
+  d.setDate(d.getDate() - day + 1)
+  return d.toISOString().slice(0, 10)
+}
+
+/* ---------------------------------------
    COMPONENT
 ----------------------------------------*/
 export default function PlannerPage() {
   const [householdId, setHouseholdId] = useState<string | null>(null)
   const [loadingHousehold, setLoadingHousehold] = useState(true)
 
+  // Generation-only config
   const [dayConfig, setDayConfig] = useState<DayConfigMap>(() =>
     Object.fromEntries(
       DAYS.map((d) => [d, { lunch: true, dinner: true }])
     ) as DayConfigMap
   )
 
+  // Persisted plan
   const [plan, setPlan] = useState<WeeklyPlan | null>(null)
   const [favourites, setFavourites] = useState<FavouriteMeal[]>([])
   const [loadingPlan, setLoadingPlan] = useState(false)
   const [error, setError] = useState("")
 
   /* ---------------------------------------
-     LOAD HOUSEHOLD + FAVOURITES + LATEST PLAN
+     LOAD HOUSEHOLD, FAVOURITES, LATEST PLAN
   ----------------------------------------*/
   useEffect(() => {
     let active = true
@@ -126,7 +134,7 @@ export default function PlannerPage() {
   }, [])
 
   /* ---------------------------------------
-     HELPERS
+     GENERATION HELPERS
   ----------------------------------------*/
   function toggleMeal(day: Day, meal: "lunch" | "dinner") {
     setDayConfig((prev) => ({
@@ -151,8 +159,23 @@ export default function PlannerPage() {
     )
   }
 
+  async function savePlan(updated: WeeklyPlan) {
+    if (!householdId) return
+
+    await supabase.from("weekly_plans").upsert(
+      {
+        household_id: householdId,
+        week_start: getWeekStart(),
+        plan_json: updated,
+      },
+      {
+        onConflict: "household_id,week_start",
+      }
+    )
+  }
+
   function swapMeal(day: Day, mealType: "lunch" | "dinner", newMeal: string) {
-    if (!newMeal || !plan) return
+    if (!plan || !newMeal) return
 
     const updated: WeeklyPlan = {
       ...plan,
@@ -185,23 +208,7 @@ export default function PlannerPage() {
     const data = await res.json()
     if (!res.ok || !data.meal) return
 
-    const updated: WeeklyPlan = {
-      ...plan,
-      [day]: { ...plan[day], [mealType]: data.meal },
-    }
-
-    setPlan(updated)
-    savePlan(updated)
-  }
-
-  async function savePlan(plan: WeeklyPlan) {
-    if (!householdId) return
-
-    await supabase.from("weekly_plans").insert({
-      household_id: householdId,
-      week_start: new Date().toISOString().slice(0, 10),
-      plan_json: plan,
-    })
+    swapMeal(day, mealType, data.meal)
   }
 
   /* ---------------------------------------
@@ -263,7 +270,7 @@ export default function PlannerPage() {
     <div className="max-w-5xl mx-auto space-y-10 p-6">
       <h1 className="text-4xl font-semibold">Weekly Meal Planner</h1>
 
-      {/* Selection Matrix */}
+      {/* Generation controls */}
       <div className="border rounded-lg p-6 bg-white shadow space-y-4">
         <div className="grid grid-cols-3 font-semibold gap-4">
           <div>Day</div>
@@ -277,74 +284,116 @@ export default function PlannerPage() {
 
             <Checkbox
               checked={dayConfig[day].lunch}
+              disabled={!!plan}
               onCheckedChange={() => toggleMeal(day, "lunch")}
             />
 
             <Checkbox
               checked={dayConfig[day].dinner}
+              disabled={!!plan}
               onCheckedChange={() => toggleMeal(day, "dinner")}
             />
           </div>
         ))}
 
         <div className="flex gap-3 pt-4">
-          <Button variant="outline" onClick={selectAll}>
+          <Button variant="outline" onClick={selectAll} disabled={!!plan}>
             Select All
           </Button>
-          <Button variant="outline" onClick={clearAll}>
+          <Button variant="outline" onClick={clearAll} disabled={!!plan}>
             Clear All
           </Button>
         </div>
       </div>
 
-      <Button onClick={generatePlan} disabled={loadingPlan}>
+      <Button onClick={generatePlan} disabled={loadingPlan || !!plan}>
         {loadingPlan ? "Generating…" : "Generate Plan"}
       </Button>
 
+      {plan && (
+        <Button variant="outline" onClick={() => setPlan(null)}>
+          Start over
+        </Button>
+      )}
+
       {error && <p className="text-red-500">{error}</p>}
 
-      {/* Render Plan */}
+      {/* Render Plan (source of truth) */}
       {plan && (
         <div className="space-y-6">
           {DAYS.map((day) => {
-            const cfg = dayConfig[day]
-            if (!cfg.lunch && !cfg.dinner) return null
+            const dayPlan = plan[day]
+            if (!dayPlan) return null
 
             return (
               <div key={day} className="border p-4 rounded bg-white shadow">
                 <h3 className="text-xl font-semibold mb-3">{day}</h3>
 
-                {cfg.lunch && (
+                {dayPlan.lunch && (
                   <div className="mb-4">
                     <p className="font-semibold">Lunch</p>
-                    <p>{plan[day]?.lunch || "—"}</p>
+                    <p>{dayPlan.lunch}</p>
 
                     <Button
                       size="sm"
                       variant="outline"
                       onClick={() =>
-                        reshuffleMeal(day, "lunch", plan[day]?.lunch)
+                        reshuffleMeal(day, "lunch", dayPlan.lunch)
                       }
                     >
                       🔄 Re-shuffle
                     </Button>
+
+                    {favourites.length > 0 && (
+                      <select
+                        className="ml-2 border rounded px-2 py-1"
+                        onChange={(e) =>
+                          swapMeal(day, "lunch", e.target.value)
+                        }
+                        defaultValue=""
+                      >
+                        <option value="">Swap for favourite…</option>
+                        {favourites.map((m) => (
+                          <option key={m.id} value={m.name}>
+                            {m.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
                   </div>
                 )}
 
-                {cfg.dinner && (
+                {dayPlan.dinner && (
                   <div>
                     <p className="font-semibold">Dinner</p>
-                    <p>{plan[day]?.dinner || "—"}</p>
+                    <p>{dayPlan.dinner}</p>
 
                     <Button
                       size="sm"
                       variant="outline"
                       onClick={() =>
-                        reshuffleMeal(day, "dinner", plan[day]?.dinner)
+                        reshuffleMeal(day, "dinner", dayPlan.dinner)
                       }
                     >
                       🔄 Re-shuffle
                     </Button>
+
+                    {favourites.length > 0 && (
+                      <select
+                        className="ml-2 border rounded px-2 py-1"
+                        onChange={(e) =>
+                          swapMeal(day, "dinner", e.target.value)
+                        }
+                        defaultValue=""
+                      >
+                        <option value="">Swap for favourite…</option>
+                        {favourites.map((m) => (
+                          <option key={m.id} value={m.name}>
+                            {m.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
                   </div>
                 )}
               </div>
