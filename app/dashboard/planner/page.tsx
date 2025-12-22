@@ -1,13 +1,10 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { supabase } from "@/lib/supabaseClient"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 
-/* ---------------------------------------
-   CONSTANTS & TYPES
-----------------------------------------*/
 const DAYS = [
   "Monday",
   "Tuesday",
@@ -51,41 +48,51 @@ function getWeekStart(date = new Date()) {
   return d.toISOString().slice(0, 10)
 }
 
-function getPreviousWeek(weekStart: string) {
-  const d = new Date(weekStart)
-  d.setDate(d.getDate() - 7)
+function addDays(isoDate: string, days: number) {
+  const d = new Date(isoDate)
+  d.setDate(d.getDate() + days)
   return getWeekStart(d)
 }
 
+function getPreviousWeek(weekStart: string) {
+  return addDays(weekStart, -7)
+}
 
 /* ---------------------------------------
    COMPONENT
 ----------------------------------------*/
 export default function PlannerPage() {
-  const [activeWeek, setActiveWeek] = useState<string>(getWeekStart())
-  const isCurrentWeek = activeWeek === getWeekStart()
+  const [activeWeek, setActiveWeek] = useState<string>(() => getWeekStart())
 
   const [householdId, setHouseholdId] = useState<string | null>(null)
   const [loadingHousehold, setLoadingHousehold] = useState(true)
 
+  // Generation-only config (used only when creating a new plan)
   const [dayConfig, setDayConfig] = useState<DayConfigMap>(() =>
-    Object.fromEntries(
-      DAYS.map((d) => [d, { lunch: true, dinner: true }])
-    ) as DayConfigMap
+    Object.fromEntries(DAYS.map((d) => [d, { lunch: true, dinner: true }])) as DayConfigMap
   )
 
+  // Persisted plan for the activeWeek
   const [plan, setPlan] = useState<WeeklyPlan | null>(null)
   const [favourites, setFavourites] = useState<FavouriteMeal[]>([])
   const [loadingPlan, setLoadingPlan] = useState(false)
   const [error, setError] = useState("")
 
+  const isCurrentWeek = useMemo(() => activeWeek === getWeekStart(), [activeWeek])
+  const hasPlan = !!plan
+
+  // Generation controls should be editable only if we are on current week and no plan exists yet
+  const generationLocked = !isCurrentWeek || hasPlan
+
   /* ---------------------------------------
-     LOAD HOUSEHOLD, FAVOURITES, PLAN
+     LOAD HOUSEHOLD + FAVOURITES + PLAN (for activeWeek)
   ----------------------------------------*/
   useEffect(() => {
     let mounted = true
 
     async function load() {
+      setError("")
+
       const { data: session } = await supabase.auth.getSession()
       const user = session.session?.user
       if (!user || !mounted) {
@@ -93,11 +100,13 @@ export default function PlannerPage() {
         return
       }
 
-      const { data: link } = await supabase
+      const { data: link, error: linkErr } = await supabase
         .from("user_households")
         .select("household_id")
         .eq("user_id", user.id)
         .maybeSingle()
+
+      if (linkErr) console.error("Failed to load user_households:", linkErr)
 
       if (!link?.household_id || !mounted) {
         setLoadingHousehold(false)
@@ -107,27 +116,34 @@ export default function PlannerPage() {
       const hid = link.household_id
       setHouseholdId(hid)
 
-      // Favourites
-      const { data: favRows } = await supabase
+      // favourites (for swap dropdown)
+      const { data: favRows, error: favErr } = await supabase
         .from("household_meals")
         .select("meals(id, name)")
         .eq("household_id", hid)
         .eq("is_favourite", true)
         .eq("meals.type", "meal")
 
+      if (favErr) console.error("Failed to load favourites:", favErr)
+
       if (favRows && mounted) {
         setFavourites(
-          favRows.map((r: any) => r.meals).filter(Boolean)
+          (favRows as any[])
+            .map((r) => r.meals)
+            .filter(Boolean)
+            .map((m) => ({ id: m.id as string, name: m.name as string }))
         )
       }
 
-      // Plan for active week
-      const { data: planRow } = await supabase
+      // plan for active week
+      const { data: planRow, error: planErr } = await supabase
         .from("weekly_plans")
         .select("plan_json")
         .eq("household_id", hid)
         .eq("week_start", activeWeek)
         .maybeSingle()
+
+      if (planErr) console.error("Failed to load weekly_plan:", planErr)
 
       if (planRow?.plan_json && mounted) {
         setPlan(planRow.plan_json as WeeklyPlan)
@@ -139,34 +155,58 @@ export default function PlannerPage() {
     }
 
     load()
+
     return () => {
       mounted = false
     }
   }, [activeWeek])
 
   /* ---------------------------------------
-     SAVE PLAN
+     DB SAVE/DELETE HELPERS
   ----------------------------------------*/
-  async function savePlan(plan: WeeklyPlan) {
+  async function savePlan(nextPlan: WeeklyPlan) {
     if (!householdId) return
 
-    await supabase
+    const { error: upsertErr } = await supabase
       .from("weekly_plans")
       .upsert(
         {
           household_id: householdId,
           week_start: activeWeek,
-          plan_json: plan,
+          plan_json: nextPlan,
         },
         { onConflict: "household_id,week_start" }
       )
+
+    if (upsertErr) {
+      console.error("❌ Failed to save plan:", upsertErr)
+      setError("Failed to save plan")
+    }
+  }
+
+  async function deletePlanForWeek() {
+    if (!householdId) return
+
+    const { error: delErr } = await supabase
+      .from("weekly_plans")
+      .delete()
+      .eq("household_id", householdId)
+      .eq("week_start", activeWeek)
+
+    if (delErr) {
+      console.error("❌ Failed to delete plan:", delErr)
+      setError("Failed to delete plan")
+      return
+    }
+
+    setPlan(null)
   }
 
   /* ---------------------------------------
-     GENERATION HELPERS
+     GENERATION UI HELPERS
   ----------------------------------------*/
   function toggleMeal(day: Day, meal: "lunch" | "dinner") {
-    if (!isCurrentWeek || plan) return
+    if (generationLocked) return
 
     setDayConfig((prev) => ({
       ...prev,
@@ -175,27 +215,22 @@ export default function PlannerPage() {
   }
 
   function selectAll() {
-    if (!isCurrentWeek || plan) return
-    setDayConfig(
-      Object.fromEntries(
-        DAYS.map((d) => [d, { lunch: true, dinner: true }])
-      ) as DayConfigMap
-    )
+    if (generationLocked) return
+    setDayConfig(Object.fromEntries(DAYS.map((d) => [d, { lunch: true, dinner: true }])) as DayConfigMap)
   }
 
   function clearAll() {
-    if (!isCurrentWeek || plan) return
-    setDayConfig(
-      Object.fromEntries(
-        DAYS.map((d) => [d, { lunch: false, dinner: false }])
-      ) as DayConfigMap
-    )
+    if (generationLocked) return
+    setDayConfig(Object.fromEntries(DAYS.map((d) => [d, { lunch: false, dinner: false }])) as DayConfigMap)
   }
 
+  /* ---------------------------------------
+     PLAN EDIT HELPERS (current week only)
+  ----------------------------------------*/
   function swapMeal(day: Day, mealType: "lunch" | "dinner", newMeal: string) {
-    if (!plan || !newMeal || !isCurrentWeek) return
+    if (!isCurrentWeek || !plan || !newMeal) return
 
-    const updated = {
+    const updated: WeeklyPlan = {
       ...plan,
       [day]: { ...plan[day], [mealType]: newMeal },
     }
@@ -204,38 +239,55 @@ export default function PlannerPage() {
     savePlan(updated)
   }
 
-  async function reshuffleMeal(
-    day: Day,
-    mealType: "lunch" | "dinner",
-    currentMeal?: string
-  ) {
-    if (!householdId || !currentMeal || !plan || !isCurrentWeek) return
+  async function reshuffleMeal(day: Day, mealType: "lunch" | "dinner", currentMeal?: string) {
+    if (!householdId || !isCurrentWeek || !plan || !currentMeal) return
 
-    const res = await fetch("/api/generate-plan", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        householdId,
-        mode: "slot",
-        day,
-        mealType,
-        existingMeal: currentMeal,
-      }),
-    })
+    try {
+      const res = await fetch("/api/generate-plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          householdId,
+          mode: "slot",
+          day,
+          mealType,
+          existingMeal: currentMeal,
+        }),
+      })
 
-    const data = await res.json()
-    if (!res.ok || !data.meal) return
+      const data = await res.json()
 
-    swapMeal(day, mealType, data.meal)
+      if (!res.ok || !data.meal) {
+        console.error("Reshuffle failed:", data)
+        setError(data?.error || "Reshuffle failed")
+        return
+      }
+
+      swapMeal(day, mealType, data.meal)
+    } catch (e) {
+      console.error("Reshuffle error:", e)
+      setError("Network error reshuffling meal")
+    }
   }
 
   /* ---------------------------------------
      GENERATE PLAN
   ----------------------------------------*/
   async function generatePlan() {
-    if (!householdId || !isCurrentWeek) return
+    if (!householdId) return
 
-    if (!DAYS.some((d) => dayConfig[d].lunch || dayConfig[d].dinner)) {
+    if (!isCurrentWeek) {
+      setError("You can only generate plans for the current week.")
+      return
+    }
+
+    if (hasPlan) {
+      setError("This week already has a plan. Use Start over if you want to regenerate.")
+      return
+    }
+
+    const hasAnySelection = DAYS.some((d) => dayConfig[d].lunch || dayConfig[d].dinner)
+    if (!hasAnySelection) {
       setError("Please select at least one meal.")
       return
     }
@@ -243,131 +295,167 @@ export default function PlannerPage() {
     setLoadingPlan(true)
     setError("")
 
-    const res = await fetch("/api/generate-plan", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        householdId,
-        selectedDays: dayConfig,
-      }),
-    })
+    try {
+      const res = await fetch("/api/generate-plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          householdId,
+          selectedDays: dayConfig,
+        }),
+      })
 
-    const data = await res.json()
-    if (!res.ok) {
-      setError(data.error || "Failed to generate plan")
+      const data = await res.json()
+
+      if (!res.ok) {
+        setError(data.error || "Failed to generate plan")
+        return
+      }
+
+      const nextPlan = data.plan as WeeklyPlan
+      setPlan(nextPlan)
+      await savePlan(nextPlan)
+    } catch (e) {
+      console.error("Generate error:", e)
+      setError("Network error while generating plan")
+    } finally {
       setLoadingPlan(false)
-      return
     }
-
-    setPlan(data.plan as WeeklyPlan)
-    await savePlan(data.plan)
-    setLoadingPlan(false)
   }
 
   async function copyLastWeek() {
-  if (!householdId || !isCurrentWeek || plan) return
+    if (!householdId) return
 
-  const previousWeek = getPreviousWeek(activeWeek)
+    if (!isCurrentWeek) {
+      setError("You can only copy into the current week.")
+      return
+    }
 
-  const { data, error } = await supabase
-    .from("weekly_plans")
-    .select("plan_json")
-    .eq("household_id", householdId)
-    .eq("week_start", previousWeek)
-    .maybeSingle()
+    if (hasPlan) {
+      setError("This week already has a plan. Use Start over first if you want to replace it.")
+      return
+    }
 
-  if (error) {
-    setError("Failed to load last week's plan")
-    return
+    const previousWeek = getPreviousWeek(activeWeek)
+
+    const { data, error: loadErr } = await supabase
+      .from("weekly_plans")
+      .select("plan_json")
+      .eq("household_id", householdId)
+      .eq("week_start", previousWeek)
+      .maybeSingle()
+
+    if (loadErr) {
+      console.error("Failed to load last week's plan:", loadErr)
+      setError("Failed to load last week's plan")
+      return
+    }
+
+    if (!data?.plan_json) {
+      setError("No plan found for last week")
+      return
+    }
+
+    const copiedPlan = data.plan_json as WeeklyPlan
+    setPlan(copiedPlan)
+    await savePlan(copiedPlan)
   }
-
-  if (!data?.plan_json) {
-    setError("No plan found for last week")
-    return
-  }
-
-  const copiedPlan = data.plan_json as WeeklyPlan
-
-  // Save as THIS week
-  await supabase
-    .from("weekly_plans")
-    .upsert(
-      {
-        household_id: householdId,
-        week_start: activeWeek,
-        plan_json: copiedPlan,
-      },
-      { onConflict: "household_id,week_start" }
-    )
-
-  setPlan(copiedPlan)
-}
-
 
   /* ---------------------------------------
      UI
   ----------------------------------------*/
   if (loadingHousehold) return <p className="p-10">Loading planner…</p>
 
+  if (!householdId) {
+    return (
+      <div className="p-10">
+        <h1 className="text-2xl font-semibold">No household found</h1>
+        <p>Please complete onboarding first.</p>
+      </div>
+    )
+  }
+
   return (
-    <div className="max-w-5xl mx-auto space-y-10 p-6">
+    <div className="max-w-5xl mx-auto space-y-8 p-6">
       <h1 className="text-4xl font-semibold">Weekly Meal Planner</h1>
 
       {/* Week navigation */}
       <div className="flex items-center justify-between bg-white p-4 rounded shadow">
-        <Button
-          variant="outline"
-          onClick={() =>
-            setActiveWeek(
-              getWeekStart(
-                new Date(new Date(activeWeek).setDate(new Date(activeWeek).getDate() - 7))
-              )
-            )
-          }
-        >
+        <Button variant="outline" onClick={() => setActiveWeek(addDays(activeWeek, -7))}>
           ← Previous Week
         </Button>
 
         <div className="font-semibold">
           Week starting {new Date(activeWeek).toLocaleDateString()}
-          {!isCurrentWeek && (
-            <span className="ml-2 text-sm text-gray-500">(Read only)</span>
-          )}
+          {!isCurrentWeek && <span className="ml-2 text-sm text-gray-500">(Read only)</span>}
         </div>
 
-        <Button
-          variant="outline"
-          onClick={() =>
-            setActiveWeek(
-              getWeekStart(
-                new Date(new Date(activeWeek).setDate(new Date(activeWeek).getDate() + 7))
-              )
-            )
-          }
-        >
+        <Button variant="outline" onClick={() => setActiveWeek(addDays(activeWeek, 7))}>
           Next Week →
         </Button>
       </div>
 
-      {/* Generate */}
-      <div className="flex gap-3">
-  <Button
-    onClick={generatePlan}
-    disabled={!isCurrentWeek || loadingPlan || !!plan}
-  >
-    Generate Plan
-  </Button>
+      {/* Generation controls */}
+      <div className="border rounded-lg p-6 bg-white shadow space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-semibold">Select meals to generate</h2>
+          {generationLocked && (
+            <span className="text-sm text-gray-500">
+              {hasPlan ? "Plan exists for this week" : "Read-only week"}
+            </span>
+          )}
+        </div>
 
-  <Button
-    variant="outline"
-    onClick={copyLastWeek}
-    disabled={!isCurrentWeek || !!plan}
-  >
-    Copy Last Week
-  </Button>
-</div>
+        <div className="grid grid-cols-3 font-semibold gap-4">
+          <div>Day</div>
+          <div>Lunch</div>
+          <div>Dinner</div>
+        </div>
 
+        {DAYS.map((day) => (
+          <div key={day} className="grid grid-cols-3 gap-4 items-center">
+            <div>{day}</div>
 
+            <Checkbox
+              checked={dayConfig[day].lunch}
+              disabled={generationLocked}
+              onCheckedChange={() => toggleMeal(day, "lunch")}
+            />
+
+            <Checkbox
+              checked={dayConfig[day].dinner}
+              disabled={generationLocked}
+              onCheckedChange={() => toggleMeal(day, "dinner")}
+            />
+          </div>
+        ))}
+
+        <div className="flex gap-3 pt-4">
+          <Button variant="outline" onClick={selectAll} disabled={generationLocked}>
+            Select All
+          </Button>
+          <Button variant="outline" onClick={clearAll} disabled={generationLocked}>
+            Clear All
+          </Button>
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div className="flex flex-wrap gap-3 items-center">
+        <Button onClick={generatePlan} disabled={loadingPlan || !isCurrentWeek || hasPlan}>
+          {loadingPlan ? "Generating…" : "Generate Plan"}
+        </Button>
+
+        <Button variant="outline" onClick={copyLastWeek} disabled={!isCurrentWeek || hasPlan}>
+          Copy Last Week
+        </Button>
+
+        {plan && (
+          <Button variant="destructive" onClick={deletePlanForWeek} disabled={!isCurrentWeek}>
+            Start over
+          </Button>
+        )}
+      </div>
 
       {error && <p className="text-red-500">{error}</p>}
 
@@ -378,16 +466,80 @@ export default function PlannerPage() {
             const dayPlan = plan[day]
             if (!dayPlan) return null
 
+            const showLunch = typeof dayPlan.lunch === "string"
+            const showDinner = typeof dayPlan.dinner === "string"
+            if (!showLunch && !showDinner) return null
+
             return (
               <div key={day} className="border p-4 rounded bg-white shadow">
                 <h3 className="text-xl font-semibold mb-3">{day}</h3>
 
-                {dayPlan.lunch && (
-                  <p><strong>Lunch:</strong> {dayPlan.lunch}</p>
+                {showLunch && (
+                  <div className="mb-4 space-y-2">
+                    <p className="font-semibold">Lunch</p>
+                    <p>{dayPlan.lunch}</p>
+
+                    <div className="flex flex-wrap gap-2 items-center">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={!isCurrentWeek}
+                        onClick={() => reshuffleMeal(day, "lunch", dayPlan.lunch)}
+                      >
+                        🔄 Re-shuffle
+                      </Button>
+
+                      {favourites.length > 0 && (
+                        <select
+                          className="text-sm border rounded px-2 py-1"
+                          disabled={!isCurrentWeek}
+                          onChange={(e) => swapMeal(day, "lunch", e.target.value)}
+                          defaultValue=""
+                        >
+                          <option value="">Swap for favourite…</option>
+                          {favourites.map((m) => (
+                            <option key={m.id} value={m.name}>
+                              {m.name}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                  </div>
                 )}
 
-                {dayPlan.dinner && (
-                  <p><strong>Dinner:</strong> {dayPlan.dinner}</p>
+                {showDinner && (
+                  <div className="space-y-2">
+                    <p className="font-semibold">Dinner</p>
+                    <p>{dayPlan.dinner}</p>
+
+                    <div className="flex flex-wrap gap-2 items-center">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={!isCurrentWeek}
+                        onClick={() => reshuffleMeal(day, "dinner", dayPlan.dinner)}
+                      >
+                        🔄 Re-shuffle
+                      </Button>
+
+                      {favourites.length > 0 && (
+                        <select
+                          className="text-sm border rounded px-2 py-1"
+                          disabled={!isCurrentWeek}
+                          onChange={(e) => swapMeal(day, "dinner", e.target.value)}
+                          defaultValue=""
+                        >
+                          <option value="">Swap for favourite…</option>
+                          {favourites.map((m) => (
+                            <option key={m.id} value={m.name}>
+                              {m.name}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                  </div>
                 )}
               </div>
             )
