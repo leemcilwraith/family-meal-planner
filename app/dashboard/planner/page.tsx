@@ -51,6 +51,13 @@ function getWeekStart(date = new Date()) {
   return d.toISOString().slice(0, 10)
 }
 
+function getPreviousWeek(weekStart: string) {
+  const d = new Date(weekStart)
+  d.setDate(d.getDate() - 7)
+  return getWeekStart(d)
+}
+
+
 /* ---------------------------------------
    COMPONENT
 ----------------------------------------*/
@@ -257,6 +264,46 @@ export default function PlannerPage() {
     setLoadingPlan(false)
   }
 
+  async function copyLastWeek() {
+  if (!householdId || !isCurrentWeek || plan) return
+
+  const previousWeek = getPreviousWeek(activeWeek)
+
+  const { data, error } = await supabase
+    .from("weekly_plans")
+    .select("plan_json")
+    .eq("household_id", householdId)
+    .eq("week_start", previousWeek)
+    .maybeSingle()
+
+  if (error) {
+    setError("Failed to load last week's plan")
+    return
+  }
+
+  if (!data?.plan_json) {
+    setError("No plan found for last week")
+    return
+  }
+
+  const copiedPlan = data.plan_json as WeeklyPlan
+
+  // Save as THIS week
+  await supabase
+    .from("weekly_plans")
+    .upsert(
+      {
+        household_id: householdId,
+        week_start: activeWeek,
+        plan_json: copiedPlan,
+      },
+      { onConflict: "household_id,week_start" }
+    )
+
+  setPlan(copiedPlan)
+}
+
+
   /* ---------------------------------------
      UI
   ----------------------------------------*/
@@ -303,9 +350,24 @@ export default function PlannerPage() {
       </div>
 
       {/* Generate */}
-      <Button onClick={generatePlan} disabled={!isCurrentWeek || loadingPlan}>
-        Generate Plan
-      </Button>
+      <div className="flex gap-3">
+  <Button
+    onClick={generatePlan}
+    disabled={!isCurrentWeek || loadingPlan || !!plan}
+  >
+    Generate Plan
+  </Button>
+
+  <Button
+    variant="outline"
+    onClick={copyLastWeek}
+    disabled={!isCurrentWeek || !!plan}
+  >
+    Copy Last Week
+  </Button>
+</div>
+
+
 
       {error && <p className="text-red-500">{error}</p>}
 
