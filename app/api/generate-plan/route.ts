@@ -7,6 +7,18 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
 })
 
+type JoinedMeal =
+  | {
+      id: string
+      name: string
+      type: "meal" | "food"
+    }
+  | {
+      id: string
+      name: string
+      type: "meal" | "food"
+    }[]
+
 type MealSlot = {
   lunch?: string
   dinner?: string
@@ -28,6 +40,9 @@ export async function POST(req: Request) {
       day,
       mealType,
       existingMeal,
+      riskLevel = 3,
+      prepTime = "quick",
+      appetite = "medium",
     } = body
 
     if (!householdId) {
@@ -35,7 +50,7 @@ export async function POST(req: Request) {
     }
 
     /* ---------------------------------------------
-       1. Fetch GREEN meals
+       1. Fetch meals
     --------------------------------------------- */
     const { data: rows, error } = await supabaseServer
       .from("household_meals")
@@ -56,11 +71,19 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Meal fetch failed" }, { status: 500 })
     }
 
-    const greenMeals = rows
-      .filter(
-        (r: any) => r.rating === "green" && r.meals && r.meals.type === "meal"
-      )
-      .map((r: any) => r.meals.name)
+    const greenMeals: string[] = []
+    const redMeals: string[] = []
+    const foods: string[] = []
+
+    for (const row of rows as { rating: string; meals: JoinedMeal | null }[]) {
+      if (!row.meals) continue
+      const meal = Array.isArray(row.meals) ? row.meals[0] : row.meals
+      if (!meal) continue
+
+      if (meal.type === "meal" && row.rating === "green") greenMeals.push(meal.name)
+      if (meal.type === "meal" && row.rating === "red") redMeals.push(meal.name)
+      if (meal.type === "food") foods.push(meal.name)
+    }
 
     if (greenMeals.length === 0) {
       return NextResponse.json(
@@ -70,7 +93,7 @@ export async function POST(req: Request) {
     }
 
     /* =================================================
-       SLOT MODE (single meal reshuffle)
+       SLOT MODE
     ================================================= */
     if (mode === "slot") {
       if (!day || !mealType || !existingMeal) {
@@ -80,7 +103,16 @@ export async function POST(req: Request) {
         )
       }
 
-      const prompt = slotPrompt(greenMeals, existingMeal)
+      const prompt = slotPrompt({
+  greenMeals,
+  redMeals,
+  foods,
+  riskLevel,
+  prepTime,
+  appetite,
+  existingMeal: String(existingMeal),
+})
+
 
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
@@ -102,22 +134,28 @@ export async function POST(req: Request) {
     }
 
     /* =================================================
-       FULL WEEK MODE
+       FULL PLAN MODE
     ================================================= */
-
-    /* Build skeleton */
     const skeleton: WeeklyPlan = {}
 
     for (const rawDay of Object.keys(selectedDays || {})) {
       const d = normaliseDay(rawDay)
       const cfg = selectedDays[rawDay]
-
       skeleton[d] = {}
       if (cfg.lunch) skeleton[d].lunch = ""
       if (cfg.dinner) skeleton[d].dinner = ""
     }
 
-    const prompt = fullPlanPrompt(greenMeals, skeleton)
+    const prompt = fullPlanPrompt({
+  greenMeals,
+  redMeals,
+  foods,
+  riskLevel,
+  prepTime,
+  appetite,
+  skeleton,
+})
+
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -129,10 +167,9 @@ export async function POST(req: Request) {
       ?.replace(/```json|```/g, "")
       .trim()
 
-    const parsed = JSON.parse(raw || "{}")
+    const parsed = JSON.parse(typeof raw === "string" && raw.trim() ? raw : "{}")
     const aiPlan: WeeklyPlan = parsed.mealPlan || {}
 
-    /* Defensive merge */
     const finalPlan: WeeklyPlan = {}
 
     for (const day of Object.keys(skeleton)) {
@@ -146,27 +183,6 @@ export async function POST(req: Request) {
             ? aiPlan[day]?.dinner || "TBD"
             : undefined,
       }
-    }
-
-    /* ---------------------------------------------
-       5. SAVE weekly_plan (INSIDE FUNCTION ✅)
-    --------------------------------------------- */
-    const { data: planRow, error: planError } = await supabaseServer
-      .from("weekly_plans")
-      .insert({
-        household_id: householdId,
-        week_start: new Date().toISOString().slice(0, 10),
-        plan_json: finalPlan,
-      })
-      .select()
-      .single()
-
-    if (planError || !planRow) {
-      console.error("❌ Failed to save weekly_plan", planError)
-      return NextResponse.json(
-        { error: "Failed to save plan" },
-        { status: 500 }
-      )
     }
 
     return NextResponse.json({ plan: finalPlan })
