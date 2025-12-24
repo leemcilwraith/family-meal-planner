@@ -18,12 +18,18 @@ import {
 type FoodRecord = {
   id: string
   name: string
-  category: string | null
+  category: string
 }
 
-type HouseholdFood = {
-  foods: FoodRecord | null
+type HouseholdFoodRow = {
   rating: "green" | "amber" | "red"
+  confidence_score?: number | null
+  foods: FoodRecord[] | null
+}
+
+type HouseholdFood = FoodRecord & {
+  rating: "green" | "amber" | "red"
+  confidence_score?: number | null
 }
 
 /* ---------------------------------------
@@ -33,6 +39,7 @@ export default function FoodPreferencesPage() {
   const [householdId, setHouseholdId] = useState<string | null>(null)
   const [foods, setFoods] = useState<HouseholdFood[]>([])
   const [newFood, setNewFood] = useState("")
+  const [newCategory, setNewCategory] = useState("veg")
   const [loading, setLoading] = useState(true)
 
   /* ---------------------------------------
@@ -53,18 +60,30 @@ export default function FoodPreferencesPage() {
         .maybeSingle()
 
       if (!link?.household_id || !mounted) return
-
       const hid = link.household_id
       setHouseholdId(hid)
 
       const { data } = await supabase
         .from("household_foods")
-        .select("rating, foods(id, name, category)")
+        .select("rating, confidence_score, foods(id, name, category)")
         .eq("household_id", hid)
         .order("rating")
 
       if (data && mounted) {
-        setFoods(data as HouseholdFood[])
+        const normalised: HouseholdFood[] = data
+          .map((row: HouseholdFoodRow) => {
+            const food = row.foods?.[0]
+            if (!food) return null
+
+            return {
+              ...food,
+              rating: row.rating,
+              confidence_score: row.confidence_score ?? null,
+            }
+          })
+          .filter(Boolean) as HouseholdFood[]
+
+        setFoods(normalised)
       }
 
       setLoading(false)
@@ -85,7 +104,10 @@ export default function FoodPreferencesPage() {
     // 1. Create food
     const { data: food, error } = await supabase
       .from("foods")
-      .insert({ name: newFood.trim() })
+      .insert({
+        name: newFood.trim(),
+        category: newCategory,
+      })
       .select()
       .single()
 
@@ -101,9 +123,14 @@ export default function FoodPreferencesPage() {
       rating: "green",
     })
 
+    // 3. Update UI
     setFoods((prev) => [
       ...prev,
-      { foods: food, rating: "green" },
+      {
+        ...food,
+        rating: "green",
+        confidence_score: null,
+      },
     ])
 
     setNewFood("")
@@ -112,7 +139,10 @@ export default function FoodPreferencesPage() {
   /* ---------------------------------------
      UPDATE RATING
   ----------------------------------------*/
-  async function updateRating(foodId: string, rating: "green" | "amber" | "red") {
+  async function updateRating(
+    foodId: string,
+    rating: "green" | "amber" | "red"
+  ) {
     if (!householdId) return
 
     await supabase
@@ -123,7 +153,7 @@ export default function FoodPreferencesPage() {
 
     setFoods((prev) =>
       prev.map((f) =>
-        f.foods?.id === foodId ? { ...f, rating } : f
+        f.id === foodId ? { ...f, rating } : f
       )
     )
   }
@@ -142,9 +172,7 @@ export default function FoodPreferencesPage() {
 
     await supabase.from("foods").delete().eq("id", foodId)
 
-    setFoods((prev) =>
-      prev.filter((f) => f.foods?.id !== foodId)
-    )
+    setFoods((prev) => prev.filter((f) => f.id !== foodId))
   }
 
   /* ---------------------------------------
@@ -157,59 +185,74 @@ export default function FoodPreferencesPage() {
       <h1 className="text-4xl font-semibold">Food Preferences</h1>
 
       <p className="text-gray-600">
-        Tell us what foods your children enjoy, tolerate, or dislike.  
+        Tell us what foods your children enjoy, tolerate, or dislike.
         This helps us create better meal plans.
       </p>
 
       {/* Add food */}
-      <div className="flex gap-4">
+      <div className="flex gap-3">
         <Input
           placeholder="Add a food (e.g. broccoli, chicken, rice)"
           value={newFood}
           onChange={(e) => setNewFood(e.target.value)}
         />
+
+        <Select value={newCategory} onValueChange={setNewCategory}>
+          <SelectTrigger className="w-40">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="meat">Meat / Fish</SelectItem>
+            <SelectItem value="veg">Vegetable</SelectItem>
+            <SelectItem value="carb">Carbohydrate</SelectItem>
+            <SelectItem value="dairy">Dairy</SelectItem>
+            <SelectItem value="other">Other</SelectItem>
+          </SelectContent>
+        </Select>
+
         <Button onClick={addFood}>Add</Button>
       </div>
 
       {/* Food list */}
       <div className="space-y-4">
-        {foods.map((row) => {
-          if (!row.foods) return null
-
-          return (
-            <div
-              key={row.foods.id}
-              className="flex items-center justify-between p-4 bg-white rounded shadow"
-            >
-              <div className="font-medium">{row.foods.name}</div>
-
-              <div className="flex items-center gap-4">
-                <Select
-                  value={row.rating}
-                  onValueChange={(v) =>
-                    updateRating(row.foods!.id, v as any)
-                  }
-                >
-                  <SelectTrigger className="w-28">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="green">Green</SelectItem>
-                    <SelectItem value="amber">Amber</SelectItem>
-                    <SelectItem value="red">Red</SelectItem>
-                  </SelectContent>
-                </Select>
-
-                <Button
-                  variant="destructive"
-                  onClick={() => deleteFood(row.foods!.id)}
-                >
-                  Delete
-                </Button>
+        {foods.map((food) => (
+          <div
+            key={food.id}
+            className="flex items-center justify-between p-4 bg-white rounded shadow"
+          >
+            <div>
+              <div className="font-medium">{food.name}</div>
+              <div className="text-sm text-gray-500 capitalize">
+                {food.category}
               </div>
             </div>
-          )
-        })}
+
+            <div className="flex items-center gap-4">
+              <Select
+                value={food.rating}
+                onValueChange={(v) =>
+                  updateRating(food.id, v as "green" | "amber" | "red")
+                }
+              >
+                <SelectTrigger className="w-28">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="green">Green</SelectItem>
+                  <SelectItem value="amber">Amber</SelectItem>
+                  <SelectItem value="red">Red</SelectItem>
+                </SelectContent>
+              </Select>
+
+              <Button
+                variant="destructive"
+                onClick={() => deleteFood(food.id)}
+              >
+                Delete
+              </Button>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   )
