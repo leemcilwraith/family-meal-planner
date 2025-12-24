@@ -24,17 +24,18 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             🏠 Dashboard
           </Link>
 
-          <Link href="/dashboard/meals" className="block text-gray-700 hover:text-black">
-            🍽 Meals & Foods
-          </Link>
-
-          <Link href="/dashboard/ratings" className="block text-gray-700 hover:text-black">
-            ⭐ Green & Red Lists
+          <Link href="/dashboard/food-preferences" className="block text-gray-700 hover:text-black">
+            🍽 Food Preferences
           </Link>
 
           <Link href="/dashboard/planner" className="block text-gray-700 hover:text-black">
             📅 Weekly Planner
           </Link>
+
+          <Link href="/dashboard/shopping-list" className="block text-gray-700 hover:text-black">
+            📅 Shopping List
+          </Link>
+
 
           <Link href="/dashboard/settings" className="block text-gray-700 hover:text-black">
             ⚙ Household Settings

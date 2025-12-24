@@ -1,196 +1,161 @@
-// lib/aiPrompts.ts
+/* ---------------------------------------
+   TYPES
+----------------------------------------*/
+type FoodPreferences = {
+  greenFoods: string[]
+  amberFoods: string[]
+  redFoods: string[]
+  riskLevel: number // 0–10
+  prepTime: "quick" | "standard" | "any"
+  appetite: "small" | "medium" | "large"
+}
 
-export function fullPlanPrompt({
-  greenMeals,
-  redMeals,
-  foods,
-  riskLevel,
-  prepTime,
-  appetite,
-  skeleton,
-}: {
-  greenMeals: string[]
-  redMeals: string[]
-  foods: string[]
-  riskLevel: number
-  prepTime: string
-  appetite: string
-  skeleton: object
-}) {
+type FullPlanPromptInput = FoodPreferences & {
+  skeleton: Record<string, { lunch?: string; dinner?: string }>
+}
+
+type SlotPromptInput = FoodPreferences & {
+  existingMeal: string
+}
+
+/* ---------------------------------------
+   HELPERS
+----------------------------------------*/
+function riskExplanation(risk: number) {
+  if (risk <= 2)
+    return "Stick almost entirely to familiar foods the children already like."
+  if (risk <= 5)
+    return "Mostly familiar foods, with very small variations."
+  if (risk <= 7)
+    return "Mix familiar foods with a few gentle new ideas."
+  return "Actively introduce new meals using familiar ingredients."
+}
+
+/* ---------------------------------------
+   FULL WEEK PROMPT
+----------------------------------------*/
+export function fullPlanPrompt(input: FullPlanPromptInput) {
+  const {
+    greenFoods,
+    amberFoods,
+    redFoods,
+    riskLevel,
+    prepTime,
+    appetite,
+    skeleton,
+  } = input
+
   return `
 You are a family meal planner for young children.
 
-Your goal is to produce a weekly meal plan that the children are likely to enjoy.
+Your job is to CREATE meals using foods the family already likes,
+while gently encouraging variety depending on the risk level.
 
---------------------------------------------------
-KNOWN PREFERENCES
---------------------------------------------------
+IMPORTANT RULES:
+- Think in INGREDIENTS, not predefined meals
+- Combine foods into sensible family meals
+- Avoid red foods unless risk level is high
+- Never include foods the family strongly dislikes unless risk >= 8
+- Prefer green foods as a base
+- Amber foods are allowed depending on risk
+- Meals should feel realistic and child-friendly
 
-Meals the children LIKE (safe meals):
-${greenMeals.map((m) => `- ${m}`).join("\n")}
+RISK GUIDANCE:
+${riskExplanation(riskLevel)}
 
-Meals the children DISLIKE (never include these):
-${redMeals.map((m) => `- ${m}`).join("\n")}
+FAMILY FOOD PREFERENCES:
 
-Foods the children are comfortable eating:
-${foods.map((f) => `- ${f}`).join("\n")}
+GREEN (very comfortable):
+${greenFoods.map((f) => `- ${f}`).join("\n")}
 
---------------------------------------------------
-ADVENTURE LEVEL
---------------------------------------------------
+AMBER (sometimes okay):
+${amberFoods.map((f) => `- ${f}`).join("\n")}
 
-The current meal adventure level is: ${riskLevel} / 10
+RED (generally disliked):
+${redFoods.map((f) => `- ${f}`).join("\n")}
 
-Rules:
-- If adventure level is 0:
-  - Use ONLY meals from the "liked meals" list
-- If adventure level is 1–3:
-  - Mostly liked meals
-  - Very small variations only
-- If adventure level is 4–6:
-  - Mix of liked meals and NEW meals based on familiar foods
-- If adventure level is 7–9:
-  - Mostly new meals based on familiar foods
-- If adventure level is 10:
-  - Freely invent meals using familiar foods
-  - Still NEVER include disliked meals
+COOKING CONSTRAINTS:
+- Prep time preference: ${prepTime}
+- Appetite size: ${appetite}
 
---------------------------------------------------
-PRACTICAL CONSTRAINTS
---------------------------------------------------
+MEAL STRUCTURE:
+- Each meal should usually include:
+  - 1 protein
+  - 1 carb
+  - 1–2 vegetables
+- Meals should sound like something a parent would actually cook
 
-Prep & cooking time preference:
-${prepTime}
-
-Appetite size:
-${appetite}
-
-Guidance:
-- Bigger appetites → heartier meals
-- Quick prep → simple, familiar dishes
-- Longer prep allowed → slightly more complex meals
-
---------------------------------------------------
-PLAN STRUCTURE (MUST FOLLOW EXACTLY)
---------------------------------------------------
-
-Fill in the following plan.
-- Do NOT add or remove days
-- Do NOT add extra meal slots
-- Fill every empty string
-- Return VALID JSON ONLY
-- No commentary, no markdown
-
+HERE IS THE PLAN YOU MUST FILL:
 ${JSON.stringify(skeleton, null, 2)}
 
---------------------------------------------------
-OUTPUT FORMAT
---------------------------------------------------
-
-Return JSON in this exact format:
+OUTPUT RULES:
+- Return VALID JSON ONLY
+- Do not add or remove days
+- Do not include commentary
+- Use this exact format:
 
 {
   "mealPlan": {
-    "Monday": { "lunch": "...", "dinner": "..." }
+    "Monday": {
+      "lunch": "Meal name",
+      "dinner": "Meal name"
+    }
   }
 }
 `
 }
 
-export function slotPrompt({
-  greenMeals,
-  redMeals,
-  foods,
-  riskLevel,
-  prepTime,
-  appetite,
-  existingMeal,
-}: {
-  greenMeals: string[]
-  redMeals: string[]
-  foods: string[]
-  riskLevel: number
-  prepTime: string
-  appetite: string
-  existingMeal: string
-}) {
+/* ---------------------------------------
+   SLOT (RESHUFFLE) PROMPT
+----------------------------------------*/
+export function slotPrompt(input: SlotPromptInput) {
+  const {
+    greenFoods,
+    amberFoods,
+    redFoods,
+    riskLevel,
+    prepTime,
+    appetite,
+    existingMeal,
+  } = input
+
   return `
-You are a family meal planner helping replace ONE meal in a weekly plan.
+You are helping reshuffle ONE meal in a weekly plan.
 
---------------------------------------------------
-CURRENT MEAL TO REPLACE
---------------------------------------------------
-
+CURRENT MEAL (do not repeat this):
 "${existingMeal}"
 
-You MUST choose a DIFFERENT meal.
+GOAL:
+Suggest ONE alternative meal that fits the family's preferences,
+without repeating the same idea.
 
---------------------------------------------------
-KNOWN PREFERENCES
---------------------------------------------------
+FOOD PREFERENCES:
 
-Meals the children LIKE (safe meals):
-${greenMeals.map((m) => `- ${m}`).join("\n")}
+GREEN:
+${greenFoods.map((f) => `- ${f}`).join("\n")}
 
-Meals the children DISLIKE (never include these):
-${redMeals.map((m) => `- ${m}`).join("\n")}
+AMBER:
+${amberFoods.map((f) => `- ${f}`).join("\n")}
 
-Foods the children are comfortable eating:
-${foods.map((f) => `- ${f}`).join("\n")}
+RED:
+${redFoods.map((f) => `- ${f}`).join("\n")}
 
---------------------------------------------------
-ADVENTURE LEVEL
---------------------------------------------------
+RISK LEVEL:
+${riskExplanation(riskLevel)}
 
-Current meal adventure level: ${riskLevel} / 10
+COOKING CONSTRAINTS:
+- Prep time: ${prepTime}
+- Appetite: ${appetite}
 
-Rules:
-- If adventure level is 0:
-  - Choose ONLY from the liked meals list
-- If adventure level is 1–3:
-  - Prefer liked meals
-  - Very small variations allowed
-- If adventure level is 4–6:
-  - Mix liked meals with NEW meals based on familiar foods
-- If adventure level is 7–9:
-  - Prefer new meals based on familiar foods
-- If adventure level is 10:
-  - Freely invent a meal using familiar foods
-  - Still NEVER include disliked meals
+RULES:
+- Create a meal from ingredients
+- Prefer green foods
+- Use amber foods only if appropriate
+- Avoid red foods unless risk >= 8
+- Meal must be realistic and child-friendly
+- Do NOT repeat the existing meal
 
---------------------------------------------------
-PRACTICAL CONSTRAINTS
---------------------------------------------------
-
-Prep & cooking time preference:
-${prepTime}
-
-Appetite size:
-${appetite}
-
-Guidance:
-- Bigger appetites → heartier meals
-- Quick prep → simple, familiar dishes
-- Longer prep allowed → slightly more complex meals
-
---------------------------------------------------
-STRICT RULES
---------------------------------------------------
-
-- Do NOT return the existing meal
-- Do NOT include any disliked meals
-- Choose ONE sensible replacement meal
-- Return VALID JSON ONLY
-- No commentary
-- No markdown
-
---------------------------------------------------
-OUTPUT FORMAT (EXACT)
---------------------------------------------------
-
-{
-  "meal": "Meal Name"
-}
+OUTPUT FORMAT (JSON ONLY):
+{ "meal": "Meal name" }
 `
 }
-
