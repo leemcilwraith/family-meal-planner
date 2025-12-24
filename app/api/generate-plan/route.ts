@@ -84,17 +84,19 @@ export async function POST(req: Request) {
     }
 
     const greenFoods: string[] = []
-    const redFoods: string[] = []
+const amberFoods: string[] = []
+const redFoods: string[] = []
 
-    for (const row of rows as any[]) {
-      if (!row.foods || row.foods.length === 0) continue
+for (const row of rows as any[]) {
+  if (!row.foods || row.foods.length === 0) continue
 
-      const food = row.foods[0]
-      if (!food?.name) continue
+  const food = row.foods[0]
+  if (!food?.name) continue
 
-      if (row.rating === "green") greenFoods.push(food.name)
-      if (row.rating === "red") redFoods.push(food.name)
-    }
+  if (row.rating === "green") greenFoods.push(food.name)
+  if (row.rating === "amber") amberFoods.push(food.name)
+  if (row.rating === "red") redFoods.push(food.name)
+}
 
     if (greenFoods.length === 0) {
       return NextResponse.json(
@@ -116,6 +118,7 @@ export async function POST(req: Request) {
 
       const prompt = slotPrompt({
         greenFoods,
+        amberFoods,
         redFoods,
         riskLevel,
         prepTime,
@@ -173,6 +176,7 @@ export async function POST(req: Request) {
     ----------------------------------------*/
     const prompt = fullPlanPrompt({
       greenFoods,
+      amberFoods,
       redFoods,
       riskLevel,
       prepTime,
